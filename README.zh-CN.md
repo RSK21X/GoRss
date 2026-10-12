@@ -3,6 +3,7 @@
 [English](README.md)
 
 GoRss 是基于 [MyGo](https://mygo.egoist.dev/) 与 [Onevra](https://github.com/oneo-me/onevra) 制作的 Apple Silicon Mac 原生 RSS/Atom 阅读器，采用浅色三栏界面。
+<img width="2760" height="1716" alt="image" src="https://github.com/user-attachments/assets/9d09bc39-384e-47f5-a92d-0557565748b3" />
 
 ## 功能
 

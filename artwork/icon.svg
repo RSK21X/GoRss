@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- 米白色扁平背景（全出血，无透明度，系统自动裁连续曲率圆角） -->
+  <rect width="1024" height="1024" fill="#F8F1E3"/>
+
+  <!-- G 字：碗部（310° 圆弧，开口朝右上）+ 右端横笔，整体扁平无阴影 -->
+  <g fill="none" stroke="#4A2D18" stroke-linecap="round" stroke-width="72">
+    <path d="M 724.1 259.2 A 330 330 0 1 0 842 512"/>
+    <path d="M 842 512 L 744 512"/>
+  </g>
+
+  <!-- RSS 信号波（内侧弧，从顶部向右） -->
+  <path d="M 512 336 A 176 176 0 0 1 671.5 437.6"
+        fill="none" stroke="#4A2D18" stroke-width="72" stroke-linecap="round"/>
+
+  <!-- 知识火花：G + o（Go）中的 "o"，扁平琥珀色 -->
+  <circle cx="512" cy="512" r="60" fill="#F5920B"/>
+</svg>

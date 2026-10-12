@@ -3,6 +3,7 @@
 [简体中文](README.zh-CN.md)
 
 GoRss is a native RSS and Atom reader for Apple Silicon Macs, built with [MyGo](https://mygo.egoist.dev/) and [Onevra](https://github.com/oneo-me/onevra). It combines subscription navigation, an article list, and a quiet reading pane in a light interface.
+<img width="2760" height="1716" alt="image" src="https://github.com/user-attachments/assets/02a39df8-0fc0-4abf-bcd1-776c5feb0625" />
 
 ## Features
 

@@ -1,0 +1,12 @@
+{
+  "name": "GoRss",
+  "identifier": "dev.gorss.reader",
+  "version": "1.0.1",
+  "icon": "artwork/icon.png",
+  "out": "build",
+  "macos": {
+    "minimumSystemVersion": "12.0",
+    "signingIdentity": "-",
+    "dmgTitle": "GoRss"
+  }
+}

@@ -1,0 +1,12 @@
+build/
+.mygo/
+generated/
+.DS_Store
+*.go.*
+.env
+.env.*
+*.pem
+*.key
+reader.json
+preferences.json
+*.test

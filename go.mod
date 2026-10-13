@@ -24,3 +24,6 @@ require (
 	golang.org/x/image v0.47.0 // indirect
 	golang.org/x/text v0.43.0 // indirect
 )
+
+// Local selection accessor for native article translation.
+replace github.com/egoist/mygo => ./internal/mygo

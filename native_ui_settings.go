@@ -40,16 +40,29 @@ func (a *nativeReader) settingsView(c *ui.Context) {
 						components.Text(c, "浅色").SingleLine().Shrink(0).TextColor(c.Theme().TextMuted)
 					}},
 				}}},
-			}}, components.SettingsOptions{Title: "阅读设置", SearchLabel: "搜索设置", SearchPlaceholder: "搜索设置", CategoryLabel: "类别", ResultsTitle: "搜索结果", EmptyText: "没有匹配的设置", Narrow: false, HeaderActions: func(c *ui.Context) {
+			}, {
+				ID: "subscriptions", Title: "订阅管理", Icon: lucide.Rss(), Description: "导入与备份订阅", Groups: []components.SettingsGroup{{
+					ID: "opml", Title: "OPML", Items: []components.SettingsItem{
+						{ID: "import", Title: "导入订阅", Description: "从 OPML 文件添加 RSS 或 Atom 订阅。", Build: func(c *ui.Context) {
+							components.Button(c, "导入 OPML", components.ButtonSecondary).Disabled(a.pending > 0).OnClick(a.importOPML)
+						}},
+						{ID: "export", Title: "备份订阅", Description: "将订阅地址导出为 OPML 文件。", Build: func(c *ui.Context) {
+							components.Button(c, "导出 OPML", components.ButtonSecondary).Disabled(a.pending > 0).OnClick(a.exportOPML)
+						}},
+					},
+				}},
+			}, a.aiSettingsCategory()}, components.SettingsOptions{Title: "设置", SearchLabel: "搜索设置", SearchPlaceholder: "搜索设置", CategoryLabel: "类别", ResultsTitle: "搜索结果", EmptyText: "没有匹配的设置", Narrow: nativeSettingsNarrow(c), HeaderActions: func(c *ui.Context) {
 				components.Button(c, "返回阅读", components.ButtonGhost).OnClick(func() { a.settings = false })
 			}})
 		})
-		ui.Row(c).FillWidth().Shrink(0).Padding(12, 24).Gap(10).Justify(ui.End).BorderWidth(1, 0, 0, 0).BorderColor(c.Theme().Border).Children(func() {
-			components.Button(c, "恢复默认", components.ButtonGhost).OnClick(func() {
-				a.draft = backend.Preferences{FontFamily: "", FontSize: 18, LineHeight: 1.8, ContentWidth: 760, ShowImages: true, Theme: "light"}
+		if a.settingsState.Category == "reading" && a.settingsState.Query == "" {
+			ui.Row(c).FillWidth().Shrink(0).Padding(12, 24).Gap(10).Justify(ui.End).BorderWidth(1, 0, 0, 0).BorderColor(c.Theme().Border).Children(func() {
+				components.Button(c, "恢复默认", components.ButtonGhost).OnClick(func() {
+					a.draft = backend.Preferences{FontFamily: "", FontSize: 18, LineHeight: 1.8, ContentWidth: 760, ShowImages: true, Theme: "light"}
+				})
+				components.Button(c, "保存设置", components.ButtonPrimary).Disabled(a.pending > 0 || a.draft == a.prefs).OnClick(a.saveSettings)
 			})
-			components.Button(c, "保存设置", components.ButtonPrimary).Disabled(a.pending > 0 || a.draft == a.prefs).OnClick(a.saveSettings)
-		})
+		}
 	})
 }
 
@@ -69,3 +82,5 @@ func (a *nativeReader) saveSettings() {
 		a.notice = "阅读设置已保存"
 	})
 }
+
+func nativeSettingsNarrow(c *ui.Context) bool { width, _ := c.Size(); return width < 1100 }

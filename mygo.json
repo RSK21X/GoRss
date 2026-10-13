@@ -1,7 +1,7 @@
 {
   "name": "GoRss",
   "identifier": "dev.gorss.reader",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "icon": "artwork/icon.png",
   "out": "build",
   "macos": {

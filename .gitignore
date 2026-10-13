@@ -10,3 +10,14 @@ generated/
 reader.json
 preferences.json
 *.test
+
+# Local AI state, credentials, and packaging scratch files
+ai.json
+ai-cache/
+.envrc
+*.p12
+*.pfx
+*.mobileprovision
+*.log
+*.tmp
+release-assets/

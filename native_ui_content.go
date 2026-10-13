@@ -29,6 +29,20 @@ import (
 var htmlMarkup = regexp.MustCompile(`(?i)<(?:p|div|br|hr|img|a|h[1-6]|ul|ol|li|blockquote|pre|code|table|span|strong|b|em|i|del|s|figure|section|article|iframe|script|style)(?:\s|/?>)`)
 var imageClient = &http.Client{Timeout: 20 * time.Second}
 
+// Onevra's explicit rem sizes (including inline code) use the context theme,
+// not the document container's inherited font size. Scope the reading metrics
+// to construction of this document; SetTheme also changes the window root,
+// so restore it before building any other UI.
+func renderArticleMarkdown(c *ui.Context, document *markdown.MarkdownDocument, prefs backend.Preferences, options markdown.MarkdownOptions) ui.Element {
+	original := c.Theme()
+	reading := *original
+	reading.Font = prefs.FontFamily
+	reading.FontSize = float32(prefs.FontSize)
+	c.SetTheme(&reading)
+	defer c.SetTheme(original)
+	return document.Render(c, options).FillWidth().Font(prefs.FontFamily).FontSize(float32(prefs.FontSize)).LineHeight(float32(prefs.LineHeight))
+}
+
 // Derived data is owned by the UI thread and discarded for every published
 // snapshot. Keep strings/indices only; retaining UI Elements across frames is
 // invalid, and virtualizing Markdown would break whole-document selection.
@@ -145,12 +159,19 @@ func (a *nativeReader) articlePreview(id string) string {
 	if !ok {
 		return ""
 	}
-	preview := shortText(a.state.Articles[i].Summary, 115)
+	article := a.state.Articles[i]
+	preview := shortText(article.Summary, 240)
+	// Only omit an application-generated summary that exactly repeats its title.
+	// Source Markdown/HTML and the stored article remain untouched.
+	if preview == strings.Join(strings.Fields(article.Title), " ") {
+		preview = ""
+	}
 	p.previews[id] = preview
 	return preview
 }
 
 func (a *nativeReader) clearArticle() {
+	a.resetAI()
 	if a.articleCancel != nil {
 		a.articleCancel()
 	}

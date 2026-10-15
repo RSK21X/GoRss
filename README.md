@@ -2,8 +2,8 @@
 
 [简体中文](README.zh-CN.md)
 
-GoRss is a native RSS and Atom reader for Apple Silicon Macs, built with [MyGo](https://mygo.egoist.dev/) and [Onevra]<img width="2760" height="1716" alt="image" src="https://github.com/user-attachments/assets/10400f67-b985-4bd7-b995-bc3f1caec4c6" />
-
+GoRss is a native RSS and Atom reader for Apple Silicon Macs, built with [MyGo](https://mygo.egoist.dev/) and [Onevra](https://github.com/oneo-me/onevra). It combines subscription navigation, an article list, and a quiet reading pane in a light interface.
+<img width="2760" height="1716" alt="GoRss reader" src="https://github.com/user-attachments/assets/10400f67-b985-4bd7-b995-bc3f1caec4c6" />
 
 ## Features
 
@@ -21,7 +21,7 @@ Open Settings from the sidebar or ⌘,. Reading settings control typography, ima
 
 ## Install
 
-Download the Apple Silicon DMG or ZIP from this repository's Releases page. Open the DMG, then drag GoRss into Applications. Quit any previous version before replacing the app. Existing subscriptions and settings are retained.
+Download the Apple Silicon DMG or ZIP from the [latest release](https://github.com/RSK21X/GoRss/releases/latest). Open the DMG, then drag GoRss into Applications. Quit any previous version before replacing the app. Existing subscriptions and settings are retained.
 
 Builds require macOS 12 or later. Packages are not Developer ID signed or notarized; macOS may require explicit approval in System Settings → Privacy & Security.
 

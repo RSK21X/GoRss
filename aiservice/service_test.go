@@ -59,8 +59,8 @@ func reply(w http.ResponseWriter, text string) {
 }
 func TestConfig(t *testing.T) {
 	c := DefaultConfig()
-	if c != c {
-		t.Fatal("not comparable")
+	if !c.Equal(c.Clone()) {
+		t.Fatal("configuration clone must preserve all values")
 	}
 	c.Custom.Model = "custom"
 	c.Magpie.Model = "magpie"
@@ -69,7 +69,7 @@ func TestConfig(t *testing.T) {
 		t.Fatal(e)
 	}
 	got, e := LoadConfig(path)
-	if e != nil || got != c {
+	if e != nil || !got.Equal(c) {
 		t.Fatal(got, e)
 	}
 	info, _ := os.Stat(path)

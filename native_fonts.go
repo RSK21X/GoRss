@@ -106,7 +106,9 @@ func nativeFontDropdown(c *ui.Context, selected *string, catalog *nativeFontCata
 						return
 					}
 					count++
-					sel.Item(family).Key(family).FillWidth().Children(func() { components.Text(c, label).SingleLine() })
+					// Select items handle input before returning in MyGo 0.5.
+					c.Key(family)
+					sel.Item(family).FillWidth().Children(func() { components.Text(c, label).SingleLine() })
 				}
 				option("")
 				// Keep saved values selectable without silently replacing them.

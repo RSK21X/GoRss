@@ -534,9 +534,10 @@ func TestNativeAISelectionAccessorPreservesClipboard(t *testing.T) {
 	doc := markdown.ParseMarkdown("First paragraph.\n\nSecond paragraph.")
 	tt := ui.NewTester(func(c *ui.Context) {
 		theme.Apply(c, theme.Light)
-		doc.Render(c, markdown.MarkdownOptions{}).ContextMenu(func(m *ui.Menu) {
+		container := doc.Render(c, markdown.MarkdownOptions{})
+		container.ContextMenu(func(m *ui.Menu) {
 			m.EditItems()
-			selected = m.SelectedText()
+			selected = nativeSelectedText(container.SelectedTexts())
 			if selected != "" {
 				m.Separator()
 				m.Item("Translate selection")
@@ -568,6 +569,16 @@ func TestNativeAISelectionAccessorPreservesClipboard(t *testing.T) {
 		t.Fatalf("original Copy command changed: %q", tt.Clipboard())
 	}
 }
+
+func TestNativeSelectedTextUsesRuneOffsets(t *testing.T) {
+	parts := []ui.SelectedText{
+		{Text: "前缀中文🙂后缀", Start: 2, End: 5},
+		{Text: "second paragraph", Start: 0, End: 6},
+	}
+	if got := nativeSelectedText(parts); got != "中文🙂\nsecond" {
+		t.Fatalf("selected text: %q", got)
+	}
+}
 func TestNativeAIBilingualBlocksPreserveStructure(t *testing.T) {
 	source := "# Heading\n\n> Quote **bold**\n\n- First\n- Second\n\n| Name | Value |\n| --- | --- |\n| x | y |\n\n```go\nfmt.Println(1)\n```\n\nTail [link](https://example.com)"
 	blocks := nativeAIBlocks(source)
@@ -597,7 +608,7 @@ func TestNativeAISelectionMenuEmptyAndLengthLimit(t *testing.T) {
 		a.ai.settings.loaded = true
 		tt := ui.NewTester(func(c *ui.Context) {
 			theme.Apply(c, theme.Light)
-			ui.Text(c, source).Selectable().ContextMenu(a.aiSelectionMenu)
+			a.aiSelectionContextMenu(ui.Column(c).Selectable().Children(func() { ui.Text(c, source) }))
 		}, 600, 400)
 		if err := tt.RightClick(source); err != nil {
 			t.Fatal(err)
@@ -757,13 +768,13 @@ func TestNativeAICredentialMutationInvalidatesImmediately(t *testing.T) {
 	a.ai.summary.text = "old secret result"
 	a.ai.cache = map[string]nativeAICacheEntry{"old": {summary: "old secret cache"}}
 	before := a.ai.summary.generation
-	a.ai.settings.models[1] = []aiservice.Model{{ID: "old-model"}}
-	a.ai.settings.modelsBase[1], a.ai.settings.identityBase[1] = "old-base", "old-base"
+	a.ai.settings.provider(aiservice.Magpie).models = []aiservice.Model{{ID: "old-model"}}
+	a.ai.settings.provider(aiservice.Magpie).modelsBase, a.ai.settings.provider(aiservice.Magpie).identityBase = "old-base", "old-base"
 	a.beginAICredentialMutation(aiservice.Magpie)
 	if ctx.Err() == nil || a.ai.summary.generation <= before || a.ai.summary.loading || a.ai.summary.text != "" || len(a.ai.cache) != 0 {
 		t.Fatal("credential mutation retained pending work or old cache")
 	}
-	if a.ai.credentialMutations != 1 || len(a.ai.settings.models[1]) != 0 || a.ai.settings.identityBase[1] != "" {
+	if a.ai.credentialMutations != 1 || len(a.ai.settings.provider(aiservice.Magpie).models) != 0 || a.ai.settings.provider(aiservice.Magpie).identityBase != "" {
 		t.Fatal("credential mutation retained old provider verification")
 	}
 }

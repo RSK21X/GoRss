@@ -93,3 +93,62 @@ func TestPreferencesSaveFailurePreservesSavedValues(t *testing.T) {
 		t.Fatalf("previous preferences lost: %+v %v", p, err)
 	}
 }
+
+func TestBilingualStyleMigrationAndReadingPreferencePrecedence(t *testing.T) {
+	for _, style := range []string{"soft", "line", "plain"} {
+		t.Run(style, func(t *testing.T) {
+			r := newTestReader(t)
+			dir := filepath.Dir(r.storePath)
+			legacy := []byte(`{"bilingual_style":"` + style + `","custom":{"model":"retained"}}`)
+			if err := os.WriteFile(filepath.Join(dir, "ai.json"), legacy, 0600); err != nil {
+				t.Fatal(err)
+			}
+			for _, prefsJSON := range []string{"", `{"fontSize":22}`} {
+				if prefsJSON != "" {
+					if err := os.WriteFile(filepath.Join(dir, "preferences.json"), []byte(prefsJSON), 0600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				prefs, err := r.Preferences()
+				if err != nil || prefs.BilingualStyle != style {
+					t.Fatalf("migration: %+v %v", prefs, err)
+				}
+			}
+			prefs := DefaultPreferences()
+			prefs.BilingualStyle = "plain"
+			if _, err := r.SavePreferences(prefs); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "ai.json"), []byte(`{"bilingual_style":"line"}`), 0600); err != nil {
+				t.Fatal(err)
+			}
+			reloaded, err := r.Preferences()
+			if err != nil || reloaded.BilingualStyle != "plain" || reloaded.FontSize != prefs.FontSize {
+				t.Fatalf("reading preference did not override legacy: %+v %v", reloaded, err)
+			}
+			before, _ := os.ReadFile(filepath.Join(dir, "ai.json"))
+			reloaded.BilingualStyle = "invalid"
+			if _, err := r.SavePreferences(reloaded); err == nil {
+				t.Fatal("invalid style saved")
+			}
+			after, _ := os.ReadFile(filepath.Join(dir, "ai.json"))
+			saved, err := r.Preferences()
+			if string(before) != string(after) || err != nil || saved.BilingualStyle != "plain" {
+				t.Fatal("style save changed AI config or lost reading preference")
+			}
+		})
+	}
+}
+
+func TestBilingualStyleMigrationIgnoresInvalidLegacyConfig(t *testing.T) {
+	for _, input := range []string{`null`, `{broken`, `{"bilingual_style":"unknown"}`, `{"custom":{"model":"retained"}}`} {
+		r := newTestReader(t)
+		if err := os.WriteFile(filepath.Join(filepath.Dir(r.storePath), "ai.json"), []byte(input), 0600); err != nil {
+			t.Fatal(err)
+		}
+		prefs, err := r.Preferences()
+		if err != nil || prefs.BilingualStyle != "soft" {
+			t.Fatalf("invalid legacy changed defaults: %+v %v", prefs, err)
+		}
+	}
+}

@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -27,6 +26,7 @@ import (
 const (
 	maxResponseBytes   = 8 << 20
 	maxArticlesPerFeed = 500 // Starred articles are retained in addition to this limit.
+	maxRefreshWorkers  = 4
 )
 
 type State struct {
@@ -35,12 +35,15 @@ type State struct {
 }
 
 type Feed struct {
-	ID          string `json:"id"`
-	URL         string `json:"url"`
-	Title       string `json:"title"`
-	SiteURL     string `json:"siteUrl"`
-	LastFetched string `json:"lastFetched"`
-	Error       string `json:"error"`
+	ID           string `json:"id"`
+	URL          string `json:"url"`
+	Title        string `json:"title"`
+	SiteURL      string `json:"siteUrl"`
+	LastFetched  string `json:"lastFetched"`
+	Error        string `json:"error"`
+	ETag         string `json:"etag,omitempty"`
+	LastModified string `json:"lastModified,omitempty"`
+	ValidatorURL string `json:"validatorUrl,omitempty"`
 }
 
 type Article struct {
@@ -57,7 +60,8 @@ type Article struct {
 }
 
 // Reader performs network requests without holding mu. subscriptions serializes
-// subscription changes and fetches; article flags can still change during a fetch.
+// subscription changes and refresh batches; a batch fetches at most four feeds
+// concurrently. Article flags can still change during a fetch.
 // All state changes are persisted before becoming visible in memory.
 type Reader struct {
 	mu            sync.Mutex
@@ -304,57 +308,41 @@ func (r *Reader) Refresh(ctx context.Context, id string) (State, error) {
 	if id != "" {
 		return r.refreshFeed(ctx, id)
 	}
+	r.mu.Lock()
+	feeds := append([]Feed(nil), r.state.Feeds...)
+	r.mu.Unlock()
+	// Keep workers bounded even with thousands of subscriptions. Each result
+	// merges under mu; errors retain subscription order regardless of completion.
+	jobs := make(chan int)
+	errs := make([]error, len(feeds))
+	var workers sync.WaitGroup
+	for range min(maxRefreshWorkers, len(feeds)) {
+		workers.Go(func() {
+			for i := range jobs {
+				if ctx.Err() != nil {
+					return
+				}
+				if _, err := r.refreshFeed(ctx, feeds[i].ID); err != nil {
+					errs[i] = fmt.Errorf("%s: %w", feeds[i].Title, err)
+				}
+			}
+		})
+	}
+dispatch:
+	for i := range feeds {
+		select {
+		case <-ctx.Done():
+			break dispatch
+		case jobs <- i:
+		}
+	}
+	close(jobs)
+	workers.Wait()
+	if err := ctx.Err(); err != nil {
+		errs = append(errs, err)
+	}
 	s, _ := r.Snapshot()
-	var errs []error
-	for _, f := range s.Feeds {
-		if ctx.Err() != nil {
-			errs = append(errs, ctx.Err())
-			break
-		}
-		if _, err := r.refreshFeed(ctx, f.ID); err != nil {
-			errs = append(errs, fmt.Errorf("%s: %w", f.Title, err))
-		}
-	}
-	s, _ = r.Snapshot()
 	return s, errors.Join(errs...)
-}
-
-func (r *Reader) fetch(ctx context.Context, address string) (*gofeed.Feed, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, address, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("User-Agent", "GoRss/1.0")
-	req.Header.Set("Accept", "application/atom+xml, application/rss+xml, application/xml, text/xml;q=0.9, */*;q=0.1")
-	resp, err := r.client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("feed returned HTTP %d", resp.StatusCode)
-	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
-	if err != nil {
-		return nil, err
-	}
-	if len(data) > maxResponseBytes {
-		return nil, errors.New("feed exceeds 8 MiB response limit")
-	}
-	parser := gofeed.NewParser()
-	parser.AtomTranslator = atomPublicationTranslator{}
-	parsed, err := parser.ParseString(string(data))
-	if err != nil {
-		return nil, fmt.Errorf("parse feed: %w", err)
-	}
-	// Relative links are resolved against the final location after redirects.
-	parsed.Link = safeLink(parsed.Link, resp.Request.URL.String())
-	for _, item := range parsed.Items {
-		if item != nil {
-			item.Link = safeLink(item.Link, resp.Request.URL.String())
-		}
-	}
-	return parsed, nil
 }
 
 // gofeed normally substitutes Updated for an absent Atom Published value.
@@ -376,10 +364,10 @@ func (atomPublicationTranslator) Translate(feed interface{}) (*gofeed.Feed, erro
 
 // refreshFeed requires subscriptions, but only holds mu when taking/merging state.
 func (r *Reader) refreshFeed(ctx context.Context, id string) (State, error) {
-	s, _ := r.Snapshot()
+	r.mu.Lock()
 	var feed Feed
 	found := false
-	for _, f := range s.Feeds {
+	for _, f := range r.state.Feeds {
 		if f.ID == id {
 			feed = f
 			found = true
@@ -387,14 +375,42 @@ func (r *Reader) refreshFeed(ctx context.Context, id string) (State, error) {
 		}
 	}
 	if !found {
+		s := cloneState(r.state)
+		r.mu.Unlock()
 		return s, errors.New("feed not found")
 	}
-	parsed, fetchErr := r.fetch(ctx, feed.URL)
+	r.mu.Unlock()
+	response, fetchErr := r.fetch(ctx, feed)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if err := ctx.Err(); err != nil {
 		return cloneState(r.state), err
 	}
+	if fetchErr == nil && response.notModified {
+		for i, current := range r.state.Feeds {
+			if current.ID != id {
+				continue
+			}
+			updated := current
+			updated.Error = ""
+			// Omitted 304 validators retain their previous values. LastFetched
+			// records the last full content fetch, so an unchanged 304 need not
+			// rewrite the article store merely to update a timestamp.
+			if response.etag != "" {
+				updated.ETag = response.etag
+			}
+			if response.lastModified != "" {
+				updated.LastModified = response.lastModified
+			}
+			if updated == current {
+				return cloneState(r.state), nil
+			}
+			next := cloneState(r.state)
+			next.Feeds[i] = updated
+			return r.commit(next)
+		}
+	}
+	parsed := response.parsed
 	next := cloneState(r.state)
 	for i := range next.Feeds {
 		if next.Feeds[i].ID != id {
@@ -406,6 +422,9 @@ func (r *Reader) refreshFeed(ctx context.Context, id string) (State, error) {
 		}
 		next.Feeds[i].Error = ""
 		next.Feeds[i].LastFetched = time.Now().UTC().Format(time.RFC3339)
+		next.Feeds[i].ETag = response.etag
+		next.Feeds[i].LastModified = response.lastModified
+		next.Feeds[i].ValidatorURL = response.validatorURL
 		if strings.TrimSpace(parsed.Title) != "" {
 			next.Feeds[i].Title = parsed.Title
 		}

@@ -1,8 +1,9 @@
 {
   "name": "GoRss",
   "identifier": "dev.gorss.reader",
-  "version": "1.0.2",
+  "version": "1.1.1",
   "icon": "artwork/icon.png",
+  "resources": ["THIRD_PARTY_NOTICES.md"],
   "out": "build",
   "macos": {
     "minimumSystemVersion": "12.0",

@@ -55,8 +55,17 @@ type nativeReader struct {
 
 func newNativeReader(r *backend.Reader) *nativeReader {
 	ctx, cancel := context.WithCancel(context.Background())
-	defaults := backend.Preferences{FontFamily: "", FontSize: 18, LineHeight: 1.8, ContentWidth: 760, ShowImages: true, Theme: "light"}
+	defaults := backend.DefaultPreferences()
 	a := &nativeReader{reader: r, ctx: ctx, cancel: cancel, jobs: make(chan nativeJob, 64), filter: "all", sideWidth: 196, listWidth: 340, selected: -1, prefs: defaults, draft: defaults}
+	// New has already read the store. Publish cached articles before any network work.
+	if r != nil {
+		state, err := r.Snapshot()
+		if err != nil {
+			a.errorText = err.Error()
+		} else {
+			a.publishState(state)
+		}
+	}
 	a.listState.Selected = &a.selected
 	a.listState.Key = func(i int) any { return a.rows[i].ID }
 	a.listState.Label = func(i int) string { return a.rows[i].Title }
@@ -74,33 +83,47 @@ func (a *nativeReader) start() {
 			case job := <-a.jobs:
 				err := job.work(a.ctx)
 				state, snapshotErr := a.reader.Snapshot()
-				if err == nil {
-					err = snapshotErr
-				}
 				a.window.Update(func() {
-					if a.ctx.Err() != nil {
-						return
-					}
-					a.pending--
-					if snapshotErr == nil {
-						a.applySnapshot(state)
-					}
-					if err != nil {
-						a.errorText = err.Error()
-					}
-					if job.done != nil {
-						job.done(err)
-					}
-					if a.articleID != "" && a.article() == nil {
-						a.articleID = ""
-						a.clearArticle()
-					}
+					a.completeJob(job, state, err, snapshotErr)
 				})
 			}
 		}
 	}()
 	a.loadPreferences()
+	a.refreshOnStartup()
 	a.loadAISettings()
+}
+
+// completeJob runs on the UI thread after a worker has taken its snapshot.
+func (a *nativeReader) completeJob(job nativeJob, state backend.State, err, snapshotErr error) {
+	if a.ctx.Err() != nil {
+		return
+	}
+	if err == nil {
+		err = snapshotErr
+	}
+	a.pending--
+	if snapshotErr == nil {
+		a.applySnapshot(state)
+	}
+	if err != nil {
+		a.errorText = err.Error()
+	}
+	if job.done != nil {
+		job.done(err)
+	}
+	if a.articleID != "" && a.article() == nil {
+		a.articleID = ""
+		a.clearArticle()
+	}
+}
+
+func (a *nativeReader) refreshOnStartup() {
+	if len(a.state.Feeds) > 0 {
+		// Preferences may still be pending. Queue behind them instead of using
+		// refreshFeed, whose busy guard is for user-initiated refreshes.
+		a.queueRefresh("")
+	}
 }
 
 func (a *nativeReader) loadPreferences() {
@@ -125,9 +148,9 @@ func (a *nativeReader) close() {
 	}
 }
 
-func (a *nativeReader) run(work func(context.Context) error, done func(error)) {
+func (a *nativeReader) run(work func(context.Context) error, done func(error)) bool {
 	if a.ctx.Err() != nil {
-		return
+		return false
 	}
 	a.pending++
 	a.errorText, a.notice = "", ""
@@ -136,8 +159,11 @@ func (a *nativeReader) run(work func(context.Context) error, done func(error)) {
 	default:
 		a.pending--
 		a.errorText = "操作过多，请等待当前任务完成。"
+		a.window.Invalidate()
+		return false
 	}
 	a.window.Invalidate()
+	return true
 }
 
 func (a *nativeReader) refresh() {
@@ -151,13 +177,19 @@ func (a *nativeReader) refreshFeed(id string) {
 	if a.pending != 0 {
 		return
 	}
-	a.refreshing = true
-	a.run(func(ctx context.Context) error { _, err := a.reader.Refresh(ctx, id); return err }, func(err error) {
+	a.queueRefresh(id)
+}
+
+func (a *nativeReader) queueRefresh(id string) {
+	queued := a.run(func(ctx context.Context) error { _, err := a.reader.Refresh(ctx, id); return err }, func(err error) {
 		a.refreshing = false
 		if err == nil {
 			a.notice = "刷新完成"
 		}
 	})
+	if queued {
+		a.refreshing = true
+	}
 }
 
 func (a *nativeReader) view(c *ui.Context) {
@@ -173,6 +205,8 @@ func (a *nativeReader) view(c *ui.Context) {
 	if c.Shortcut(0, ui.KeyEscape) {
 		if a.ai.selection.open {
 			a.closeSelectionAI()
+		} else if a.ai.settings.removeOpen {
+			a.ai.settings.removeOpen = false
 		} else {
 			a.settings, a.addOpen, a.removeOpen, a.moreOpen = false, false, false, false
 		}
@@ -429,7 +463,9 @@ func (a *nativeReader) articleView(c *ui.Context) {
 					width = 760
 				}
 				ui.Column(c).FillWidth().MaxWidth(width).MinWidth(0).Gap(20).Font(a.prefs.FontFamily).FontSize(float32(a.prefs.FontSize)).Children(func() {
-					components.Text(c, v.Title).FontSize(30).FontWeight(600).LineHeight(1.25).Wrap().Selectable().ContextMenu(a.aiSelectionMenu)
+					a.aiSelectionContextMenu(ui.Column(c).FillWidth().MinWidth(0).Selectable().Children(func() {
+						components.Text(c, v.Title).FontSize(30).FontWeight(600).LineHeight(1.25).Wrap()
+					}))
 					meta := articleDate(v.Published)
 					if v.Author != "" {
 						meta = v.Author + "  /  " + meta
@@ -445,7 +481,7 @@ func (a *nativeReader) articleView(c *ui.Context) {
 						if a.prefs.ShowImages {
 							images = a.images
 						}
-						renderArticleMarkdown(c, a.document, a.prefs, markdown.MarkdownOptions{CodeHeaders: true, CopyCodeLabel: "复制代码", Images: images, OnLink: func(destination string) { a.openLink(destination, v.URL) }}).ContextMenu(a.aiSelectionMenu)
+						a.aiSelectionContextMenu(renderArticleMarkdown(c, a.document, a.prefs, markdown.MarkdownOptions{CodeHeaders: true, CopyCodeLabel: "复制代码", Images: images, OnLink: func(destination string) { a.openLink(destination, v.URL) }}))
 					}
 					if a.imageErrors > 0 && a.prefs.ShowImages {
 						components.Text(c, fmt.Sprintf("%d 张图片未能加载", a.imageErrors)).FontSize(12).TextColor(c.Theme().TextMuted)

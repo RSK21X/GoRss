@@ -30,6 +30,7 @@ type nativeAIResult struct {
 	generation       uint64
 	translation      *aiservice.TranslationResult
 	completed, total int
+	verifiedText     string
 }
 
 func (r *nativeAIResult) stop() {
@@ -46,10 +47,13 @@ func (r *nativeAIResult) clear() {
 	r.document = nil
 	r.translation = nil
 	r.completed, r.total = 0, 0
+	r.verifiedText = ""
 	r.open = false
 }
 
 type nativeAIState struct {
+	// Tests can supply an isolated credential store and cache directory.
+	serviceFactory                         func(aiservice.Config) (*aiservice.Service, error)
 	settings                               nativeAISettings
 	credentialMutations                    int
 	summary, translation, selection        nativeAIResult
@@ -150,26 +154,30 @@ func (a *nativeReader) requestAI(kind string, regenerate bool) {
 	ctx, cancel := context.WithCancel(a.ctx)
 	result.cancel = cancel
 	token, sourceKey := result.generation, a.ai.sourceKey
-	config := a.ai.settings.config
+	config := a.ai.settings.config.clone()
 	selected := a.ai.selectionText
-	title := article.Title
 	resume := result.translation
 	// A retry retains valid batches; explicit regeneration clears them.
 	if regenerate && !retrying {
 		resume = nil
+	}
+	if kind != "translation" || (regenerate && !retrying) {
+		result.text, result.verifiedText = "", ""
+		result.document = nil
+		result.completed, result.total = 0, 0
 	}
 	go func() {
 		var translated *aiservice.TranslationResult
 		var output string
 		var err error
 		if kind == "translation" {
-			service, serviceErr := aiservice.New(aiservice.Config(config), aiservice.NewKeychainStore())
+			service, serviceErr := a.newAIService(config)
 			err = serviceErr
 			if err == nil {
 				if regenerate && !retrying {
 					service.ForceRefresh()
 				}
-				value, translationErr := service.TranslateMarkdown(ctx, source, aiservice.TranslationOptions{Resume: resume, OnProgress: func(progress aiservice.TranslationProgress) {
+				value, translationErr := service.TranslateMarkdown(ctx, source, aiservice.TranslationOptions{Resume: resume, Stream: true, OnProgress: func(progress aiservice.TranslationProgress) {
 					doc := markdown.ParseMarkdown(progress.Markdown)
 					a.window.Update(func() {
 						if ctx.Err() != nil || result.generation != token || a.ai.sourceKey != sourceKey {
@@ -177,13 +185,24 @@ func (a *nativeReader) requestAI(kind string, regenerate bool) {
 						}
 						result.completed, result.total = progress.Completed, progress.Total
 						result.text, result.document = progress.Markdown, doc
+						if !progress.Preview {
+							result.verifiedText = progress.Markdown
+						}
 					})
 				}})
 				translated = &value
 				output, err = value.Markdown, translationErr
 			}
 		} else {
-			output, err = nativeAIExecute(ctx, config, kind, source, title, selected, regenerate && !retrying)
+			output, err = a.executeAI(ctx, config, kind, source, selected, regenerate && !retrying, func(value string) {
+				doc := markdown.ParseMarkdown(value)
+				a.window.Update(func() {
+					if ctx.Err() != nil || result.generation != token || a.ai.sourceKey != sourceKey || a.ctx.Err() != nil {
+						return
+					}
+					result.text, result.document = value, doc
+				})
+			})
 		}
 		var document *markdown.MarkdownDocument
 		if output != "" {
@@ -283,6 +302,24 @@ func (a *nativeReader) aiSummaryView(c *ui.Context, article backend.Article) {
 	})
 }
 func (a *nativeReader) aiResultView(c *ui.Context, r *nativeAIResult, base string, retry func()) {
+	a.aiResultStatus(c, r, retry)
+	if r.document != nil {
+		a.aiSelectionContextMenu(renderArticleMarkdown(c, r.document, a.prefs, markdown.MarkdownOptions{CodeHeaders: true, CopyCodeLabel: "复制代码", Images: a.images, OnLink: func(url string) { a.openLink(url, base) }}))
+	}
+}
+func (a *nativeReader) stopAIResult(r *nativeAIResult) {
+	r.stop()
+	r.errorText = "已停止生成，可重试。"
+	if r == &a.ai.translation {
+		r.text = r.verifiedText
+		if r.text == "" || r.text == a.ai.source {
+			r.document = nil
+		} else {
+			r.document = markdown.ParseMarkdown(r.text)
+		}
+	}
+}
+func (a *nativeReader) aiResultStatus(c *ui.Context, r *nativeAIResult, retry func()) {
 	if r.loading {
 		ui.Row(c).Gap(8).Children(func() {
 			components.Spinner(c, components.SpinnerSpokes).Size(16, 16)
@@ -291,16 +328,12 @@ func (a *nativeReader) aiResultView(c *ui.Context, r *nativeAIResult, base strin
 				label = fmt.Sprintf("正在翻译 %d / %d…", r.completed, r.total)
 			}
 			components.Text(c, label).TextColor(c.Theme().TextMuted)
+			components.Button(c, "停止生成", components.ButtonGhost).OnClick(func() { a.stopAIResult(r) })
 		})
-		return
 	}
 	if r.errorText != "" {
 		components.Text(c, r.errorText).Wrap().TextColor(c.Theme().Danger)
 		components.Button(c, "重试", components.ButtonSecondary).OnClick(retry)
-		return
-	}
-	if r.document != nil {
-		renderArticleMarkdown(c, r.document, a.prefs, markdown.MarkdownOptions{CodeHeaders: true, CopyCodeLabel: "复制代码", Images: a.images, OnLink: func(url string) { a.openLink(url, base) }}).ContextMenu(a.aiSelectionMenu)
 	}
 }
 func (a *nativeReader) aiTranslationView(c *ui.Context, article backend.Article) bool {
@@ -332,8 +365,8 @@ func (a *nativeReader) aiTranslationView(c *ui.Context, article backend.Article)
 		return false
 	}
 	if r.loading || r.errorText != "" {
-		a.aiResultView(c, r, article.URL, func() { a.requestAI("translation", true) })
-		if r.document != nil && r.completed > 0 {
+		a.aiResultStatus(c, r, func() { a.requestAI("translation", true) })
+		if r.document != nil && (r.completed > 0 || (r.text != "" && r.text != a.ai.source)) {
 			if a.ai.mode == "bilingual" {
 				a.renderBilingualAI(c, article)
 			} else {
@@ -408,7 +441,7 @@ func nativeAIBlocks(source string) []string {
 }
 func (a *nativeReader) renderAITranslationDocument(c *ui.Context, article backend.Article) {
 	if a.ai.translation.document != nil {
-		renderArticleMarkdown(c, a.ai.translation.document, a.prefs, markdown.MarkdownOptions{CodeHeaders: true, CopyCodeLabel: "复制代码", Images: a.images, OnLink: func(url string) { a.openLink(url, article.URL) }}).ContextMenu(a.aiSelectionMenu)
+		a.aiSelectionContextMenu(renderArticleMarkdown(c, a.ai.translation.document, a.prefs, markdown.MarkdownOptions{CodeHeaders: true, CopyCodeLabel: "复制代码", Images: a.images, OnLink: func(url string) { a.openLink(url, article.URL) }}))
 	}
 }
 func (a *nativeReader) renderBilingualAI(c *ui.Context, article backend.Article) {
@@ -432,18 +465,62 @@ func (a *nativeReader) renderBilingualAI(c *ui.Context, article backend.Article)
 	options := markdown.MarkdownOptions{CodeHeaders: true, CopyCodeLabel: "复制代码", Images: a.images, OnLink: func(url string) { a.openLink(url, article.URL) }}
 	for i := range a.ai.bilingualOriginal {
 		ui.Column(c).FillWidth().MinWidth(0).Gap(10).Children(func() {
-			renderArticleMarkdown(c, a.ai.bilingualOriginal[i], a.prefs, options).ContextMenu(a.aiSelectionMenu)
+			a.aiSelectionContextMenu(renderArticleMarkdown(c, a.ai.bilingualOriginal[i], a.prefs, options))
 			if !a.ai.bilingualSame[i] {
-				ui.Column(c).FillWidth().MinWidth(0).Padding(0, 0, 0, 14).BorderWidth(0, 0, 0, 2).BorderColor(c.Theme().Border).Children(func() {
-					renderArticleMarkdown(c, a.ai.bilingualTranslated[i], a.prefs, options).ContextMenu(a.aiSelectionMenu)
-				})
+				a.bilingualTranslation(c, a.ai.bilingualTranslated[i], options)
 			}
 		})
 	}
 }
-func (a *nativeReader) aiSelectionMenu(m *ui.Menu) {
+
+func (a *nativeReader) bilingualTranslation(c *ui.Context, document *markdown.MarkdownDocument, options markdown.MarkdownOptions) {
+	a.aiSelectionContextMenu(nativeBilingualTranslation(c, document, a.prefs, options))
+}
+
+// Reading previews and article translations use the same styling and metrics.
+func nativeBilingualTranslation(c *ui.Context, document *markdown.MarkdownDocument, prefs backend.Preferences, options markdown.MarkdownOptions) ui.Element {
+	panel := ui.Column(c).FillWidth().MinWidth(0).Gap(8).Label("双语译文")
+	switch prefs.BilingualStyle {
+	case "plain":
+		panel.Padding(4, 0, 12)
+	case "line":
+		panel.Padding(8, 0, 8, 16).BorderWidth(0, 0, 0, 2).BorderColor(ui.RGB(151, 170, 159))
+	default:
+		panel.Padding(14, 18).Radius(8).Background(ui.RGB(243, 246, 242))
+	}
+	panel.Children(func() {
+		components.Text(c, "译文").FontSize(11).FontWeight(500).TextColor(c.Theme().TextMuted)
+		renderArticleMarkdown(c, document, prefs, options)
+	})
+	return panel
+}
+
+// ContextMenu invokes its builder during this build pass. The element is never
+// retained across frames; SelectedTexts reads the container's actual selection.
+func (a *nativeReader) aiSelectionContextMenu(container ui.Element) ui.Element {
+	return container.ContextMenu(func(m *ui.Menu) {
+		a.aiSelectionMenu(m, nativeSelectedText(container.SelectedTexts()))
+	})
+}
+
+func nativeSelectedText(parts []ui.SelectedText) string {
+	var selected strings.Builder
+	for _, part := range parts {
+		runes := []rune(part.Text)
+		if part.Start < 0 || part.End > len(runes) || part.Start >= part.End {
+			continue
+		}
+		if selected.Len() > 0 {
+			selected.WriteByte('\n')
+		}
+		selected.WriteString(string(runes[part.Start:part.End]))
+	}
+	return selected.String()
+}
+
+func (a *nativeReader) aiSelectionMenu(m *ui.Menu, text string) {
 	m.EditItems()
-	selected := strings.TrimSpace(m.SelectedText())
+	selected := strings.TrimSpace(text)
 	if selected == "" || !a.aiReady() {
 		return
 	}

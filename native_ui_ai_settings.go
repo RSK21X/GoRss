@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -16,30 +18,45 @@ import (
 
 type nativeAIConfig aiservice.Config
 
+func (c nativeAIConfig) clone() nativeAIConfig { return nativeAIConfig(aiservice.Config(c).Clone()) }
+func (c nativeAIConfig) equal(other nativeAIConfig) bool {
+	return aiservice.Config(c).Equal(aiservice.Config(other))
+}
 func (c nativeAIConfig) enabled() bool {
 	p, err := aiservice.Config(c).Provider(c.ActiveProvider)
 	return err == nil && p.Enabled && strings.TrimSpace(p.Model) != "" && strings.TrimSpace(p.Language) != ""
 }
 
+type nativeAIProviderState struct {
+	key, status              string
+	busy                     bool
+	cancel                   context.CancelFunc
+	generation               uint64
+	models                   []aiservice.Model
+	modelsBase, identityBase string
+}
 type nativeAISettings struct {
-	wasVisible    bool
-	config, draft nativeAIConfig
-	path          string
-	keys          [2]string // ephemeral password input; cleared immediately after capture
-	status        [2]string
-	busy          [2]bool
-	cancel        [2]context.CancelFunc
-	generation    [2]uint64
-	saving        bool
-	loaded        bool
-	models        [2][]aiservice.Model
-	modelsBase    [2]string
-	identityBase  [2]string
+	wasVisible     bool
+	config, draft  nativeAIConfig
+	path           string
+	providers      map[aiservice.Provider]*nativeAIProviderState
+	saving, loaded bool
+	tab            string
+	removeOpen     bool
 }
 
+func (s *nativeAISettings) provider(p aiservice.Provider) *nativeAIProviderState {
+	if s.providers == nil {
+		s.providers = map[aiservice.Provider]*nativeAIProviderState{}
+	}
+	if s.providers[p] == nil {
+		s.providers[p] = &nativeAIProviderState{}
+	}
+	return s.providers[p]
+}
 func (a *nativeReader) loadAISettings() {
 	defaults := nativeAIConfig(aiservice.DefaultConfig())
-	a.ai.settings.config, a.ai.settings.draft = defaults, defaults
+	a.ai.settings.config, a.ai.settings.draft = defaults.clone(), defaults.clone()
 	directory, err := os.UserConfigDir()
 	if err != nil {
 		a.errorText = "无法定位 AI 设置目录"
@@ -59,130 +76,184 @@ func (a *nativeReader) loadAISettings() {
 				a.errorText = err.Error()
 				return
 			}
-			s.config = nativeAIConfig(config)
-			if s.draft == defaults {
-				s.draft = s.config
+			s.config = nativeAIConfig(config).clone()
+			if s.draft.equal(defaults) {
+				s.draft = s.config.clone()
 			}
 		})
 	}()
 }
 func (a *nativeReader) cancelAISettings() {
-	s := &a.ai.settings
-	for i := range s.cancel {
-		if s.cancel[i] != nil {
-			s.cancel[i]()
-			s.cancel[i] = nil
+	a.ai.settings.removeOpen = false
+	for _, state := range a.ai.settings.providers {
+		if state.cancel != nil {
+			state.cancel()
+			state.cancel = nil
 		}
-		s.generation[i]++
-		s.busy[i] = false
-		s.keys[i] = ""
+		state.generation++
+		state.busy = false
+		state.key = ""
 	}
 }
-func nativeAIProviderIndex(p aiservice.Provider) int {
-	if p == aiservice.Magpie {
-		return 1
+func (a *nativeReader) addAIProvider() {
+	s := &a.ai.settings
+	if len(s.draft.Providers) >= 64 {
+		return
 	}
-	return 0
+	var id [16]byte
+	if _, err := rand.Read(id[:]); err != nil {
+		a.errorText = "无法创建供应商标识"
+		return
+	}
+	p := aiservice.Provider("provider-" + hex.EncodeToString(id[:]))
+	s.draft = s.draft.clone()
+	s.draft.Providers = append(s.draft.Providers, aiservice.NamedProvider{ID: p, Config: aiservice.ProviderConfig{Name: "新供应商", TimeoutSeconds: 60, Language: "简体中文", Stream: true}})
+	s.draft.ActiveProvider = p
+	s.tab = "connection"
+}
+func (a *nativeReader) removeAIProvider(p aiservice.Provider) {
+	if p == aiservice.Custom || p == aiservice.Magpie {
+		return
+	}
+	s := &a.ai.settings
+	state := s.provider(p)
+	if state.cancel != nil {
+		state.cancel()
+	}
+	state.generation++
+	state.busy = false
+	state.key = ""
+	delete(s.providers, p)
+	s.draft = s.draft.clone()
+	for i, entry := range s.draft.Providers {
+		if entry.ID == p {
+			s.draft.Providers = append(s.draft.Providers[:i], s.draft.Providers[i+1:]...)
+			break
+		}
+	}
+	if s.draft.ActiveProvider == p {
+		s.draft.ActiveProvider = aiservice.Custom
+	}
+	s.removeOpen = false
 }
 func (a *nativeReader) aiSettingsCategory() components.SettingsCategory {
-	groups := []components.SettingsGroup{{ID: "ai-active", Title: "文章 AI", Items: []components.SettingsItem{{ID: "ai-provider", Title: "当前服务", Description: "摘要、文章翻译与划词翻译使用这里选中的服务。切换服务保留各自设置。", Build: func(c *ui.Context) {
-		sel := components.Select(c, &a.ai.settings.draft.ActiveProvider)
-		sel.Trigger.Label("当前 AI 服务").FillWidth().Children(func() {
-			label := "自定义 API"
-			if a.ai.settings.draft.ActiveProvider == aiservice.Magpie {
-				label = "Magpie"
-			}
-			components.Text(c, label)
-		})
-		sel.Popup(func(panel ui.Element) {
-			for _, p := range []aiservice.Provider{aiservice.Custom, aiservice.Magpie} {
-				label := "自定义 API"
-				if p == aiservice.Magpie {
-					label = "Magpie"
-				}
-				sel.Item(p).Label(label).FillWidth().Children(func() { components.Text(c, label) })
-			}
-		})
-	}}}}}
-	for _, provider := range []aiservice.Provider{a.ai.settings.draft.ActiveProvider} {
-		p := provider
-		index := nativeAIProviderIndex(p)
-		title := "自定义 API"
-		if p == aiservice.Magpie {
-			title = "Magpie"
-		}
-		config := &a.ai.settings.draft.Custom
-		if p == aiservice.Magpie {
-			config = &a.ai.settings.draft.Magpie
-		}
-		groups = append(groups, components.SettingsGroup{ID: "ai-" + string(p), Title: title, Items: []components.SettingsItem{
-			{ID: string(p) + "-enabled", Title: "启用 " + title, Description: "保存后文章操作使用当前服务；工具栏始终保留 AI 入口。", Build: func(c *ui.Context) {
-				components.Switch(c, &config.Enabled, "启用 "+title, components.SwitchOptions{HideLabel: true})
-			}},
-			{ID: string(p) + "-base", Title: "API 地址", Description: "OpenAI 兼容 API 根地址，通常以 /v1 结尾；本地允许 HTTP。", Build: func(c *ui.Context) {
-				components.TextBox(c, &config.BaseURL, components.TextBoxOptions{}).Label(title + " API 地址").FillWidth().MinWidth(0)
-			}},
-			{ID: string(p) + "-model", Title: "模型 ID", Description: "可先获取模型再选择；服务不提供模型列表时可手填。", Build: func(c *ui.Context) {
-				ui.Column(c).FillWidth().MinWidth(0).Gap(8).Children(func() {
-					components.TextBox(c, &config.Model, components.TextBoxOptions{}).Label(title + " 模型 ID").FillWidth()
-					if a.ai.settings.modelsBase[index] == config.BaseURL && len(a.ai.settings.models[index]) > 0 {
-						nativeAIModelSelect(c, &config.Model, title, a.ai.settings.models[index])
-					}
-					components.Button(c, "获取可用模型", components.ButtonSecondary).Disabled(a.ai.settings.busy[index] || a.ai.credentialMutations > 0).OnClick(func() { a.aiSettingsOperation(p, "models") })
+	s := &a.ai.settings
+	config := aiservice.Config(s.draft)
+	p := config.ActiveProvider
+	pc := (*aiservice.Config)(&s.draft).ProviderDraft(p)
+	if pc == nil {
+		s.draft.ActiveProvider = aiservice.Custom
+		p = aiservice.Custom
+		pc = &s.draft.Custom
+	}
+	state := s.provider(p)
+	title := config.ProviderName(p)
+	groups := []components.SettingsGroup{{ID: "ai-active", Title: "供应商", Items: []components.SettingsItem{
+		{ID: "ai-provider", Title: "当前服务", Description: "每个供应商单独保存模型、密钥和提示词。保存后用于摘要和翻译。", Build: func(c *ui.Context) {
+			ui.Column(c).FillWidth().MinWidth(0).Gap(10).Children(func() {
+				sel := components.Select(c, &s.draft.ActiveProvider)
+				sel.Trigger.Label("当前 AI 服务").FillWidth().Children(func() {
+					components.Text(c, aiservice.Config(s.draft).ProviderName(s.draft.ActiveProvider)).SingleLine()
 				})
-			}},
-			{ID: string(p) + "-timeout", Title: "超时（秒）", Build: func(c *ui.Context) {
-				value := float64(config.TimeoutSeconds)
-				input := components.NumberInput(c, &value, 1, 600, 1)
-				input.Label(title + " 超时秒数")
-				if input.Changed() {
-					config.TimeoutSeconds = int(value)
-				}
-			}},
-			{ID: string(p) + "-language", Title: "目标语言", Description: "摘要和翻译的输出语言。", Build: func(c *ui.Context) {
-				components.TextBox(c, &config.Language, components.TextBoxOptions{}).Label(title + " 目标语言").FillWidth().MinWidth(0)
-			}},
-			{ID: string(p) + "-key", Title: "API Key", Description: "凭据仅保存到 macOS Keychain。空白保持现有凭据；本地 Magpie 可不设置。", Build: func(c *ui.Context) {
-				ui.Column(c).FillWidth().MinWidth(0).Gap(8).Children(func() {
-					components.TextBox(c, &a.ai.settings.keys[index], components.TextBoxOptions{}).Password().Label(title + " API Key").Placeholder("输入新凭据").FillWidth()
-					ui.Row(c).Gap(6).Children(func() {
-						components.Button(c, "保存到 Keychain", components.ButtonSecondary).Disabled(a.ai.settings.busy[index] || strings.TrimSpace(a.ai.settings.keys[index]) == "").OnClick(func() { a.aiSettingsOperation(p, "key") })
-						components.Button(c, "删除凭据", components.ButtonGhost).Disabled(a.ai.settings.busy[index]).OnClick(func() { a.aiSettingsOperation(p, "delete") })
-					})
-				})
-			}},
-			{ID: string(p) + "-test", Title: "连接检测", Description: "使用当前表单和新输入的 API Key（空白使用已保存凭据）。检测不调用模型；测试模型会发送请求。", Build: func(c *ui.Context) {
-				ui.Column(c).FillWidth().MinWidth(0).Gap(8).Children(func() {
-					ui.Row(c).Gap(8).Children(func() {
-						components.Button(c, "检测协议", components.ButtonSecondary).Disabled(a.ai.settings.busy[index]).OnClick(func() { a.aiSettingsOperation(p, "probe") })
-						components.Button(c, "测试模型", components.ButtonSecondary).Disabled(a.ai.settings.busy[index]).OnClick(func() { a.aiSettingsOperation(p, "test") })
-					})
-					if a.ai.settings.busy[index] {
-						components.Spinner(c, components.SpinnerSpokes).Size(16, 16)
+				sel.Popup(func(panel ui.Element) {
+					for _, id := range aiservice.Config(s.draft).ProviderIDs() {
+						c.Key(id)
+						sel.Item(id).Label(aiservice.Config(s.draft).ProviderName(id)).FillWidth().Children(func() { components.Text(c, aiservice.Config(s.draft).ProviderName(id)).SingleLine() })
 					}
-					if p == aiservice.Magpie {
-						identity := "Magpie 身份尚未确认"
-						if a.ai.settings.identityBase[index] == config.BaseURL && config.BaseURL != "" {
-							identity = "Magpie 身份已确认"
+				})
+				ui.Row(c).Gap(8).Children(func() {
+					components.Button(c, "添加供应商", components.ButtonSecondary).Disabled(!s.loaded || s.saving || len(s.draft.Providers) >= 64).OnClick(a.addAIProvider)
+					if p != aiservice.Custom && p != aiservice.Magpie {
+						components.Button(c, "移除配置", components.ButtonGhost).Disabled(s.saving || a.ai.credentialMutations > 0).OnClick(func() { s.removeOpen = true })
+					}
+				})
+				ui.Row(c).Gap(4).Children(func() {
+					for _, tab := range []struct{ id, label string }{{"connection", "连接与模型"}, {"prompts", "提示词"}} {
+						tab := tab
+						style := components.ButtonGhost
+						if s.tab == tab.id || (s.tab == "" && tab.id == "connection") {
+							style = components.ButtonSecondary
 						}
-						components.Text(c, identity).Wrap().FontSize(12)
+						components.Button(c, tab.label, style).OnClick(func() { s.tab = tab.id })
 					}
-					components.Text(c, a.ai.settings.status[index]).Wrap().FontSize(12)
 				})
+			})
+		}},
+	}}}
+	if s.tab == "prompts" || strings.TrimSpace(a.settingsState.Query) != "" {
+		groups = append(groups, components.SettingsGroup{ID: "ai-prompts-" + string(p), Title: "自定义提示词", Items: []components.SettingsItem{
+			{ID: "summary-prompt", Title: "摘要提示词", Description: "控制摘要的语言、长度和结构。{language} 会替换为目标语言，{kind} 表示内容类型。留空使用默认提示词。", Build: func(c *ui.Context) {
+				nativeAIPromptEditor(c, &pc.SummaryPrompt, "摘要", aiservice.DefaultSummaryPrompt)
+			}},
+			{ID: "translation-prompt", Title: "翻译提示词", Description: "控制译文风格、术语和语气。系统会附加段落标识与格式保持要求；不会修改订阅原文。", Build: func(c *ui.Context) {
+				nativeAIPromptEditor(c, &pc.TranslationPrompt, "翻译", aiservice.DefaultTranslationPrompt)
 			}},
 		}})
 	}
-	groups = append(groups, components.SettingsGroup{ID: "ai-save", Title: "", Items: []components.SettingsItem{{ID: "ai-save-config", Title: "保存 AI 设置", Description: "", Build: func(c *ui.Context) {
-		components.Button(c, "保存 AI 设置", components.ButtonPrimary).Disabled(!a.ai.settings.loaded || a.ai.settings.saving || a.ai.settings.draft == a.ai.settings.config).OnClick(a.saveAISettings)
-	}}}})
-	// Keep every item searchable and let Settings render its standard row/group.
+	if s.tab != "prompts" || strings.TrimSpace(a.settingsState.Query) != "" {
+		groups = append(groups, components.SettingsGroup{ID: "ai-connection-" + string(p), Title: "连接", Items: []components.SettingsItem{
+			{ID: "provider-name", Title: "显示名称", Description: "用于识别供应商，不影响连接与密钥。", Build: func(c *ui.Context) {
+				components.TextBox(c, &pc.Name, components.TextBoxOptions{}).Label("供应商名称").Placeholder(title).FillWidth()
+			}},
+			{ID: "provider-enabled", Title: "启用状态", Description: "启用并保存后，可以主动生成摘要和译文。", Build: func(c *ui.Context) {
+				components.Switch(c, &pc.Enabled, "启用 "+title, components.SwitchOptions{HideLabel: true})
+			}},
+			{ID: "provider-base", Title: "API 地址", Description: "OpenAI 兼容接口根地址，通常以 /v1 结尾。", Build: func(c *ui.Context) {
+				components.TextBox(c, &pc.BaseURL, components.TextBoxOptions{}).Label(title + " API 地址").Placeholder("https://…/v1").FillWidth()
+			}},
+			{ID: "provider-key", Title: "API Key", Description: "空输入保留已有凭据。保存到 Keychain 后立即生效；本地 Magpie 可以留空。", Build: func(c *ui.Context) {
+				components.TextBox(c, &state.key, components.TextBoxOptions{}).Password().Label(title + " API Key").Placeholder("输入新凭据").FillWidth()
+				ui.Row(c).Gap(8).Children(func() {
+					components.Button(c, "保存到 Keychain", components.ButtonSecondary).Disabled(state.busy || a.ai.credentialMutations > 0 || strings.TrimSpace(state.key) == "").OnClick(func() { a.aiSettingsOperation(p, "key") })
+					components.Button(c, "删除凭据", components.ButtonGhost).Disabled(state.busy || a.ai.credentialMutations > 0).OnClick(func() { a.aiSettingsOperation(p, "delete") })
+				})
+			}},
+			{ID: "provider-model", Title: "模型 ID", Description: "获取模型列表后选择，也可以直接填写。", Build: func(c *ui.Context) {
+				components.TextBox(c, &pc.Model, components.TextBoxOptions{}).Label(title + " 模型 ID").FillWidth()
+				if state.modelsBase == pc.BaseURL && len(state.models) > 0 {
+					nativeAIModelSelect(c, &pc.Model, title, state.models)
+				}
+				ui.Row(c).Gap(8).Children(func() {
+					components.Button(c, "检测协议", components.ButtonSecondary).Disabled(state.busy || a.ai.credentialMutations > 0).OnClick(func() { a.aiSettingsOperation(p, "probe") })
+					components.Button(c, "获取可用模型", components.ButtonGhost).Disabled(state.busy || a.ai.credentialMutations > 0).OnClick(func() { a.aiSettingsOperation(p, "models") })
+				})
+				components.Button(c, "测试模型", components.ButtonGhost).Disabled(state.busy || a.ai.credentialMutations > 0).OnClick(func() { a.aiSettingsOperation(p, "test") })
+				if state.busy {
+					components.Spinner(c, components.SpinnerSpokes).Size(16, 16)
+				}
+				if state.status != "" {
+					components.Text(c, state.status).Wrap().FontSize(12).TextColor(c.Theme().TextMuted)
+				}
+				if p == aiservice.Magpie && state.identityBase == pc.BaseURL {
+					components.Text(c, "已验证 Magpie 服务身份").FontSize(12).TextColor(c.Theme().TextMuted)
+				}
+			}},
+		}}, components.SettingsGroup{ID: "ai-output-" + string(p), Title: "生成与显示", Items: []components.SettingsItem{
+			{ID: "provider-stream", Title: "逐步输出", Description: "收到文本后逐步显示。兼容服务不支持流式时可关闭。", Build: func(c *ui.Context) {
+				components.Switch(c, &pc.Stream, "流式显示", components.SwitchOptions{HideLabel: true})
+			}},
+			{ID: "provider-language", Title: "目标语言", Description: "摘要和翻译的默认输出语言。", Build: func(c *ui.Context) {
+				components.TextBox(c, &pc.Language, components.TextBoxOptions{}).Label(title + " 目标语言").FillWidth()
+			}},
+			{ID: "provider-timeout", Title: "超时（秒）", Description: "包括流式内容接收，范围为 1–600 秒。", Build: func(c *ui.Context) {
+				value := float64(pc.TimeoutSeconds)
+				input := components.NumberInput(c, &value, 1, 600, 1).Label(title + " 超时秒数")
+				if input.Changed() {
+					pc.TimeoutSeconds = int(value)
+				}
+			}},
+		}})
+	}
 	for gi := range groups {
 		for ii := range groups[gi].Items {
 			build := groups[gi].Items[ii].Build
+			wide := strings.HasSuffix(groups[gi].Items[ii].ID, "-prompt")
 			groups[gi].Items[ii].Build = func(c *ui.Context) {
-				controls := ui.Column(c).MinWidth(0).Gap(8)
+				controls := ui.Column(c).MinWidth(0).Gap(10)
 				if nativeSettingsNarrow(c) {
-					controls.FillWidth().MaxWidth(560)
+					controls.FillWidth().MaxWidth(620)
+				} else if wide {
+					controls.Width(560).Shrink(0)
 				} else {
 					controls.Width(320).Shrink(0)
 				}
@@ -190,38 +261,71 @@ func (a *nativeReader) aiSettingsCategory() components.SettingsCategory {
 			}
 		}
 	}
-	return components.SettingsCategory{ID: "ai", Title: "AI", Icon: lucide.Sparkles(), Description: "摘要、翻译与凭据", Groups: groups}
+	return components.SettingsCategory{ID: "ai", Title: "AI", Icon: lucide.Sparkles(), Description: "供应商、模型与提示词", Groups: groups}
 }
+func nativeAIPromptEditor(c *ui.Context, value *string, label, fallback string) {
+	ui.TextArea(c, value).Label(label+"提示词编辑器").Placeholder(fallback).FillWidth().Height(190).Padding(12).FontSize(13).LineHeight(1.5).Radius(8).Background(c.Theme().Surface).Border(1, c.Theme().Border)
+	ui.Row(c).FillWidth().Gap(8).Children(func() {
+		components.Text(c, fmt.Sprintf("%d / 16000 字节", len(*value))).FontSize(11).TextColor(c.Theme().TextMuted).Grow(1)
+		components.Button(c, "填入默认"+label, components.ButtonGhost).OnClick(func() { *value = fallback })
+		components.Button(c, "清空自定义"+label, components.ButtonGhost).Disabled(*value == "").OnClick(func() { *value = "" })
+	})
+}
+
+func (a *nativeReader) aiSettingsFooter(c *ui.Context) {
+	s := &a.ai.settings
+	ui.Row(c).FillWidth().Shrink(0).Padding(12, 24).Gap(10).AlignItems(ui.Center).BorderWidth(1, 0, 0, 0).BorderColor(c.Theme().Border).Children(func() {
+		label := "已保存"
+		if !s.loaded {
+			label = "正在读取设置…"
+		} else if !s.draft.equal(s.config) {
+			label = "有未保存的更改"
+		}
+		components.Text(c, label).FontSize(12).TextColor(c.Theme().TextMuted).Grow(1)
+		components.Button(c, "放弃更改", components.ButtonGhost).Disabled(s.saving || s.draft.equal(s.config)).OnClick(func() { a.cancelAISettings(); s.draft = s.config.clone() })
+		components.Button(c, "保存 AI 设置", components.ButtonPrimary).Disabled(!s.loaded || s.saving || s.draft.equal(s.config)).OnClick(a.saveAISettings)
+	})
+	components.Dialog(c, &s.removeOpen, components.DialogOptions{Label: "移除供应商配置"}, func(panel ui.Element) {
+		panel.Width(440).MaxWidth(nativeDialogWidth(c)).Gap(12)
+		components.Text(c, "移除 "+aiservice.Config(s.draft).ProviderName(s.draft.ActiveProvider)+"？").Bold()
+		components.Text(c, "保存后移除该服务配置。Keychain 凭据独立管理，如需清理请先使用“删除凭据”。").Wrap()
+		ui.Row(c).Gap(8).Justify(ui.End).Children(func() {
+			components.Button(c, "取消", components.ButtonGhost).OnClick(func() { s.removeOpen = false })
+			components.Button(c, "移除配置", components.ButtonPrimary).OnClick(func() { a.removeAIProvider(s.draft.ActiveProvider) })
+		})
+	})
+}
+
 func (a *nativeReader) aiSettingsOperation(provider aiservice.Provider, kind string) {
 	s := &a.ai.settings
-	i := nativeAIProviderIndex(provider)
-	if s.busy[i] || a.ai.credentialMutations > 0 {
+	state := s.provider(provider)
+	if state.busy || a.ai.credentialMutations > 0 {
 		return
 	}
-	if s.cancel[i] != nil {
-		s.cancel[i]()
+	if state.cancel != nil {
+		state.cancel()
 	}
-	s.generation[i]++
-	token := s.generation[i]
+	state.generation++
+	token := state.generation
 	ctx, cancel := context.WithCancel(a.ctx)
-	s.cancel[i] = cancel
-	s.busy[i] = true
-	s.status[i] = "正在使用当前表单检测…"
-	config := aiservice.Config(s.draft)
+	state.cancel = cancel
+	state.busy = true
+	state.status = "正在使用当前表单检测…"
+	config := aiservice.Config(s.draft).Clone()
 	providerConfig, _ := config.Provider(provider)
 	mutating := kind == "key" || kind == "delete"
 	if mutating {
 		a.beginAICredentialMutation(provider)
 	}
 	if kind == "probe" {
-		s.identityBase[i] = ""
+		state.identityBase = ""
 	}
 	if kind == "models" || kind == "probe" {
-		s.models[i], s.modelsBase[i] = nil, ""
+		state.models, state.modelsBase = nil, ""
 	}
-	key := s.keys[i]
+	key := state.key
 	if kind == "key" {
-		s.keys[i] = ""
+		state.key = ""
 	}
 	// Editing configuration while a probe runs cannot attach its result to new input.
 	go func() {
@@ -277,28 +381,28 @@ func (a *nativeReader) aiSettingsOperation(provider aiservice.Provider, kind str
 			if mutating {
 				a.ai.credentialMutations--
 			}
-			if a.ctx.Err() != nil || ctx.Err() != nil || s.generation[i] != token {
+			if a.ctx.Err() != nil || ctx.Err() != nil || state.generation != token {
 				return
 			}
 			cancel()
-			s.cancel[i] = nil
-			s.busy[i] = false
+			state.cancel = nil
+			state.busy = false
 			if kind == "probe" || kind == "test" || kind == "models" {
 				current, _ := aiservice.Config(s.draft).Provider(provider)
-				if current != providerConfig || (kind != "key" && s.keys[i] != key) {
-					s.status[i] = "设置已变化，请重新检测"
+				if current != providerConfig || (kind != "key" && state.key != key) {
+					state.status = "设置已变化，请重新检测"
 					return
 				}
 			}
 			if err != nil {
-				s.status[i] = nativeAISettingsError(err)
+				state.status = nativeAISettingsError(err)
 			} else {
-				s.status[i] = message
+				state.status = message
 				if kind == "models" || kind == "probe" {
-					s.models[i], s.modelsBase[i] = models, providerConfig.BaseURL
+					state.models, state.modelsBase = models, providerConfig.BaseURL
 				}
 				if kind == "probe" && provider == aiservice.Magpie {
-					s.identityBase[i] = providerConfig.BaseURL
+					state.identityBase = providerConfig.BaseURL
 				}
 			}
 		})
@@ -309,7 +413,7 @@ func (a *nativeReader) saveAISettings() {
 	if s.saving {
 		return
 	}
-	draft := s.draft
+	draft := s.draft.clone()
 	if err := aiservice.Config(draft).Validate(); err != nil {
 		a.errorText = err.Error()
 		return
@@ -330,15 +434,21 @@ func (a *nativeReader) saveAISettings() {
 				a.errorText = err.Error()
 				return
 			}
-			s.config = draft
+			s.config = draft.clone()
 			a.resetAI()
 			clear(a.ai.cache)
 			a.notice = "AI 设置已保存"
 		})
 	}()
 }
-func nativeAIExecute(ctx context.Context, config nativeAIConfig, kind, source, title, selected string, regenerate bool) (string, error) {
-	service, err := aiservice.New(aiservice.Config(config), aiservice.NewKeychainStore())
+func (a *nativeReader) newAIService(config nativeAIConfig) (*aiservice.Service, error) {
+	if a.ai.serviceFactory != nil {
+		return a.ai.serviceFactory(aiservice.Config(config).Clone())
+	}
+	return aiservice.New(aiservice.Config(config), aiservice.NewKeychainStore())
+}
+func (a *nativeReader) executeAI(ctx context.Context, config nativeAIConfig, kind, source, selected string, regenerate bool, onDelta func(string)) (string, error) {
+	service, err := a.newAIService(config)
 	if err != nil {
 		return "", err
 	}
@@ -347,12 +457,9 @@ func nativeAIExecute(ctx context.Context, config nativeAIConfig, kind, source, t
 	}
 	switch kind {
 	case "summary":
-		return service.Summarize(ctx, source)
-	case "translation":
-		value, err := service.TranslateMarkdown(ctx, source, aiservice.TranslationOptions{})
-		return value.Markdown, err
+		return service.SummarizeStream(ctx, source, onDelta)
 	case "selection":
-		return service.TranslateSelection(ctx, selected)
+		return service.TranslateSelectionStream(ctx, selected, onDelta)
 	}
 	return "", fmt.Errorf("未知 AI 操作")
 }
@@ -366,15 +473,29 @@ func nativeAIModelSelect(c *ui.Context, selected *string, provider string, model
 		}
 		components.Text(c, label).SingleLine()
 	})
+	query := ui.Local(sel.Trigger, "modelSearch", func() string { return "" })
+	if !sel.Open() {
+		*query = ""
+	}
 	sel.Popup(func(panel ui.Element) {
 		panel.Width(320).Children(func() {
+			sel.SearchField(query).Label(provider + " 搜索模型").Placeholder("搜索模型名称或 ID")
 			ui.Scroll(c).FillWidth().MaxHeight(280).Children(func() {
+				count := 0
 				for _, model := range models {
+					if q := strings.ToLower(strings.TrimSpace(*query)); q != "" && !strings.Contains(strings.ToLower(model.ID+" "+model.DisplayName), q) {
+						continue
+					}
+					count++
 					label := model.ID
 					if model.DisplayName != "" && model.DisplayName != model.ID {
 						label = model.DisplayName + " · " + model.ID
 					}
-					sel.Item(model.ID).Key(model.ID).FillWidth().Children(func() { components.Text(c, label).SingleLine() })
+					c.Key(model.ID)
+					sel.Item(model.ID).FillWidth().Children(func() { components.Text(c, label).SingleLine() })
+				}
+				if count == 0 {
+					components.Text(c, "没有匹配的模型").TextColor(c.Theme().TextMuted)
 				}
 			})
 		})
@@ -387,8 +508,8 @@ func (a *nativeReader) beginAICredentialMutation(provider aiservice.Provider) {
 	a.ai.credentialMutations++
 	a.resetAI()
 	clear(a.ai.cache)
-	i := nativeAIProviderIndex(provider)
-	a.ai.settings.models[i], a.ai.settings.modelsBase[i], a.ai.settings.identityBase[i] = nil, "", ""
+	state := a.ai.settings.provider(provider)
+	state.models, state.modelsBase, state.identityBase = nil, "", ""
 }
 
 func nativeAISettingsError(err error) string {

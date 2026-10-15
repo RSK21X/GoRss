@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 )
 
@@ -21,20 +22,70 @@ const (
 )
 
 type ProviderConfig struct {
-	Enabled        bool   `json:"enabled"`
-	BaseURL        string `json:"base_url"`
-	Model          string `json:"model"`
-	TimeoutSeconds int    `json:"timeout_seconds"`
-	Language       string `json:"language"`
+	Name              string `json:"name,omitempty"`
+	Enabled           bool   `json:"enabled"`
+	BaseURL           string `json:"base_url"`
+	Model             string `json:"model"`
+	TimeoutSeconds    int    `json:"timeout_seconds"`
+	Language          string `json:"language"`
+	Stream            bool   `json:"stream"`
+	SummaryPrompt     string `json:"summary_prompt,omitempty"`
+	TranslationPrompt string `json:"translation_prompt,omitempty"`
+}
+type NamedProvider struct {
+	ID     Provider       `json:"id"`
+	Config ProviderConfig `json:"config"`
 }
 type Config struct {
-	ActiveProvider Provider       `json:"active_provider"`
-	Custom         ProviderConfig `json:"custom"`
-	Magpie         ProviderConfig `json:"magpie"`
+	BilingualStyle string          `json:"bilingual_style,omitempty"` // Legacy field; reading preferences now own the display style.
+	ActiveProvider Provider        `json:"active_provider"`
+	Custom         ProviderConfig  `json:"custom"`
+	Magpie         ProviderConfig  `json:"magpie"`
+	Providers      []NamedProvider `json:"providers,omitempty"`
+}
+
+func (c Config) Clone() Config {
+	c.Providers = append([]NamedProvider(nil), c.Providers...)
+	return c
+}
+func (c Config) Equal(other Config) bool { return reflect.DeepEqual(c.Clone(), other.Clone()) }
+func (c Config) ProviderIDs() []Provider {
+	ids := []Provider{Custom, Magpie}
+	for _, entry := range c.Providers {
+		ids = append(ids, entry.ID)
+	}
+	return ids
+}
+func (c Config) ProviderName(id Provider) string {
+	p, err := c.Provider(id)
+	if err == nil && strings.TrimSpace(p.Name) != "" {
+		return p.Name
+	}
+	if id == Magpie {
+		return "Magpie"
+	}
+	if id == Custom {
+		return "自定义 API"
+	}
+	return "未命名服务"
+}
+func (c *Config) ProviderDraft(id Provider) *ProviderConfig {
+	if id == Custom {
+		return &c.Custom
+	}
+	if id == Magpie {
+		return &c.Magpie
+	}
+	for i := range c.Providers {
+		if c.Providers[i].ID == id {
+			return &c.Providers[i].Config
+		}
+	}
+	return nil
 }
 
 func DefaultConfig() Config {
-	return Config{ActiveProvider: Custom, Custom: ProviderConfig{BaseURL: "https://api.openai.com/v1", TimeoutSeconds: 60, Language: "简体中文"}, Magpie: ProviderConfig{BaseURL: "http://127.0.0.1:3425/v1", TimeoutSeconds: 60, Language: "简体中文"}}
+	return Config{BilingualStyle: "soft", ActiveProvider: Custom, Custom: ProviderConfig{BaseURL: "https://api.openai.com/v1", TimeoutSeconds: 60, Language: "简体中文", Stream: true}, Magpie: ProviderConfig{BaseURL: "http://127.0.0.1:3425/v1", TimeoutSeconds: 60, Language: "简体中文", Stream: true}}
 }
 func (c Config) Provider(p Provider) (ProviderConfig, error) {
 	switch p {
@@ -43,14 +94,37 @@ func (c Config) Provider(p Provider) (ProviderConfig, error) {
 	case Magpie:
 		return c.Magpie, nil
 	}
+	for _, entry := range c.Providers {
+		if entry.ID == p {
+			return entry.Config, nil
+		}
+	}
 	return ProviderConfig{}, ErrConfig
 }
 func (c Config) Validate() error {
+	if c.BilingualStyle != "" && c.BilingualStyle != "soft" && c.BilingualStyle != "line" && c.BilingualStyle != "plain" {
+		return fmt.Errorf("%w：双语译文样式无效", ErrConfig)
+	}
 	if _, err := c.Provider(c.ActiveProvider); err != nil {
 		return err
 	}
-	for i, p := range []ProviderConfig{c.Custom, c.Magpie} {
-		name := []string{"自定义 API", "Magpie"}[i]
+	if len(c.Providers) > 64 {
+		return fmt.Errorf("%w：最多添加 64 个供应商", ErrConfig)
+	}
+	seen := map[Provider]bool{}
+	for _, id := range c.ProviderIDs() {
+		if !validProvider(id) || seen[id] {
+			return fmt.Errorf("%w：供应商标识重复或无效", ErrConfig)
+		}
+		seen[id] = true
+		p, _ := c.Provider(id)
+		name := c.ProviderName(id)
+		if len(p.Name) > 100 || strings.ContainsAny(p.Name, "\x00\r\n") {
+			return fmt.Errorf("%w：供应商名称无效", ErrConfig)
+		}
+		if len(p.SummaryPrompt) > 16000 || len(p.TranslationPrompt) > 16000 || strings.ContainsRune(p.SummaryPrompt+p.TranslationPrompt, 0) {
+			return fmt.Errorf("%w：提示词不能超过 16000 字节或含空字符", ErrConfig)
+		}
 		if _, err := validateBase(p.BaseURL); err != nil {
 			return fmt.Errorf("%w：%s API 地址须为 HTTPS 或本地 HTTP 根地址", ErrConfig, name)
 		}
@@ -115,7 +189,7 @@ func LoadConfig(path string) (Config, error) {
 		return c, errors.New("AI configuration could not be read")
 	}
 	defer f.Close()
-	d := json.NewDecoder(io.LimitReader(f, 65537))
+	d := json.NewDecoder(io.LimitReader(f, maxConfigBytes+1))
 	d.DisallowUnknownFields()
 	if d.Decode(&c) != nil {
 		return DefaultConfig(), ErrConfig
@@ -138,6 +212,9 @@ func SaveConfig(path string, c Config) error {
 	b, e := json.MarshalIndent(c, "", "  ")
 	if e != nil {
 		return ErrConfig
+	}
+	if len(b) > maxConfigBytes {
+		return fmt.Errorf("%w：配置文件过大", ErrConfig)
 	}
 	f, e := os.CreateTemp(filepath.Dir(path), ".ai-config-*")
 	if e != nil {

@@ -3,6 +3,7 @@ package backend
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -10,16 +11,17 @@ import (
 )
 
 type Preferences struct {
-	FontFamily   string  `json:"fontFamily"`
-	FontSize     float64 `json:"fontSize"`
-	LineHeight   float64 `json:"lineHeight"`
-	ContentWidth float64 `json:"contentWidth"`
-	ShowImages   bool    `json:"showImages"`
-	Theme        string  `json:"theme"`
+	FontFamily     string  `json:"fontFamily"`
+	FontSize       float64 `json:"fontSize"`
+	LineHeight     float64 `json:"lineHeight"`
+	ContentWidth   float64 `json:"contentWidth"`
+	ShowImages     bool    `json:"showImages"`
+	Theme          string  `json:"theme"`
+	BilingualStyle string  `json:"bilingualStyle"`
 }
 
 func DefaultPreferences() Preferences {
-	return Preferences{FontSize: 18, LineHeight: 1.8, ContentWidth: 760, ShowImages: true, Theme: "light"}
+	return Preferences{FontSize: 18, LineHeight: 1.8, ContentWidth: 760, ShowImages: true, Theme: "light", BilingualStyle: "soft"}
 }
 
 func validatePreferences(p Preferences) error {
@@ -37,21 +39,45 @@ func validatePreferences(p Preferences) error {
 	if p.Theme != "light" {
 		return errors.New("当前仅支持浅色主题")
 	}
+	if p.BilingualStyle != "" && p.BilingualStyle != "soft" && p.BilingualStyle != "line" && p.BilingualStyle != "plain" {
+		return errors.New("双语译文样式无效")
+	}
 	return nil
+}
+
+// Older releases stored the reading style in ai.json. Read only that field,
+// without changing the AI file. Explicit reading preferences take precedence.
+func legacyBilingualStyle(dir string) string {
+	f, err := os.Open(filepath.Join(dir, "ai.json"))
+	if err != nil {
+		return "soft"
+	}
+	defer f.Close()
+	var legacy struct {
+		Style string `json:"bilingual_style"`
+	}
+	if json.NewDecoder(io.LimitReader(f, 4<<20)).Decode(&legacy) == nil {
+		switch legacy.Style {
+		case "soft", "line", "plain":
+			return legacy.Style
+		}
+	}
+	return "soft"
 }
 
 func (r *Reader) Preferences() (Preferences, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	path := filepath.Join(filepath.Dir(r.storePath), "preferences.json")
+	defaults := DefaultPreferences()
+	defaults.BilingualStyle = legacyBilingualStyle(filepath.Dir(r.storePath))
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return DefaultPreferences(), nil
+		return defaults, nil
 	}
 	if err != nil {
 		return DefaultPreferences(), err
 	}
-	defaults := DefaultPreferences()
 	p := &defaults
 	if err = json.Unmarshal(data, &p); err != nil {
 		return DefaultPreferences(), err

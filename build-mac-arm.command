@@ -17,6 +17,6 @@ go mod tidy
 go test ./...
 go vet ./...
 echo "构建 Apple Silicon 应用…"
-go run github.com/egoist/mygo/cmd/mygo@v0.4.5 build -platform darwin/arm64
+go run github.com/egoist/mygo/cmd/mygo@v0.5.1 build -platform darwin/arm64
 echo "构建完成：build/darwin-arm64"
 open "build/darwin-arm64"

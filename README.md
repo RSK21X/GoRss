@@ -7,7 +7,7 @@ GoRss is a native RSS and Atom reader for Apple Silicon Macs, built with [MyGo](
 
 ## Features
 
-Add, remove, and refresh RSS/Atom subscriptions; search article titles and summaries; filter unread and starred articles; and import or export subscriptions as OPML. Articles support Markdown, images, tables, quotes, and highlighted code blocks. Feed HTML is converted to Markdown; complex web layouts and interactive content are not reproduced.
+Cached articles appear at launch while all subscriptions refresh in the background. A failed refresh keeps cached articles and reports the error. Up to four subscriptions refresh concurrently. ETag and Last-Modified conditional requests reuse cached articles on HTTP 304. Add, remove, and refresh RSS/Atom subscriptions; search article titles and summaries; filter unread and starred articles; and import or export subscriptions as OPML. Articles support Markdown, images, tables, quotes, and highlighted code blocks. Feed HTML is converted to Markdown; complex web layouts and interactive content are not reproduced.
 
 Reading settings include a searchable dropdown of locally installed macOS fonts, font size, line spacing, content width, and image visibility. Settings and reading state persist locally. Articles provided by feeds are cached; remote images require a connection. The reader does not fetch full web pages when a feed provides only a summary.
 
@@ -15,7 +15,9 @@ Reading settings include a searchable dropdown of locally installed macOS fonts,
 
 AI is disabled by default. Article toolbar actions generate summaries and translate articles on demand, with original, translated, and bilingual views. Select text and use the context menu to translate up to 4,000 characters. Long articles are translated in Markdown-aware batches, displayed as each batch completes. Retry reuses successful batches; regeneration bypasses cached results. Code, images, and link destinations are preserved, and RSS content is never overwritten.
 
-Open Settings from the sidebar or ⌘,. Reading settings control typography and images; the AI category saves its configuration separately. Custom providers use OpenAI-compatible `/models` and `/chat/completions` endpoints: enter a base URL, actual model ID, target language, and timeout. Magpie defaults to `http://127.0.0.1:3425/v1`; detection checks `/api/hello` identity before `/v1/models`. Model testing sends a real request. Save/delete credentials explicitly; an empty field keeps the existing key. See [AI reading details](AI_READING.md).
+Add multiple OpenAI-compatible providers, each with its own name, endpoint, model, credential account, and summary/translation prompts. Settings include model search, prompt editors, a fixed save bar, and draft discard. Reading settings offer a soft background, a side rule, or plain text for bilingual translations, with a live preview. Existing custom API and Magpie profiles remain available.
+
+Open Settings from the sidebar or ⌘,. Reading settings control typography, images, and bilingual translation styles; the AI category saves its configuration separately. Custom providers use OpenAI-compatible `/models` and `/chat/completions` endpoints: enter a base URL, actual model ID, target language, and timeout. Magpie defaults to `http://127.0.0.1:3425/v1`; detection checks `/api/hello` identity before `/v1/models`. Model testing sends a real request. Save/delete credentials explicitly; an empty field keeps the existing key. See [AI reading details](AI_READING.md).
 
 ## Install
 
@@ -31,12 +33,12 @@ Install Go 1.27.1 or later, clone the repository, and run on macOS:
 go mod tidy
 go test ./...
 go vet ./...
-go run github.com/egoist/mygo/cmd/mygo@v0.4.5 build -platform darwin/arm64
+go run github.com/egoist/mygo/cmd/mygo@v0.5.1 build -platform darwin/arm64
 ```
 
-Output is written to `build/darwin-arm64/`. The build script is another option: `bash build-mac-arm.command`. No Node or frontend build step is required. MyGo is pinned to v0.4.5 and Onevra to v0.2026.6.
+Output is written to `build/darwin-arm64/`. The build script is another option: `bash build-mac-arm.command`. No Node or frontend build step is required. MyGo is pinned to v0.5.1 and Onevra to v0.2026.6.
 
-The pinned `go run ...@v0.4.5` builds the upstream CLI independently. Its child `go build` runs in this repository and honors the local `replace` for the app runtime. Keep the complete `internal/mygo/` directory and its license: it provides `ui.Menu.SelectedText()` for selection translation.
+The app and build CLI both use upstream MyGo v0.5.1. Selection translation uses the public `Element.SelectedTexts()` API. No local MyGo fork or `replace` directive is needed.
 
 ## Settings and data
 
@@ -48,9 +50,9 @@ Data is stored under `~/Library/Application Support/GoRss/`: `reader.json` conta
 
 ## Validation and limits
 
-See the [1.0.2 release notes](release-v1.0.2.md) for validation. The build environment is Linux; actual Mac window launch, CoreText enumeration, native dialogs, live Keychain interaction, real AI providers, and DMG mounting were not exercised. Headless benchmarks do not measure Mac display FPS.
+See the [1.1.1 release notes](release-v1.1.1.md) for validation and packaging, and the [MyGo review](MYGO_0.5_REVIEW.md) for framework measurements and follow-up work. Native macOS window startup and CoreText font enumeration were checked. Native file dialogs, the real Keychain, and live AI services were not exercised in this round. Headless performance tests do not measure macOS display FPS.
 
-AI requests currently use `stream: false` and complete JSON responses. Batch progress is not token streaming. Latency depends on the model, network, and article length. Bilingual selection is limited across independent paired blocks; alignment failures are explained with a translated-view fallback. Very long articles still incur whole-document layout costs. AI results can be inaccurate, and summaries only use content available from the feed.
+AI displays SSE output progressively. Summaries and selection translations show arriving text. Article translations show provisional previews and cache only fully validated batches. Generation can be stopped and retried. Disable streaming for incompatible services; an explicit rejection of the stream parameter permits one fallback. Latency depends on the model, network, and article length. Bilingual selection is limited across independent paired blocks; alignment failures are explained with a translated-view fallback. Very long articles still incur whole-document layout costs. AI results can be inaccurate, and summaries only use content available from the feed.
 
 ## Dependencies and attribution
 

@@ -8,13 +8,15 @@ GoRss 是基于 [MyGo](https://mygo.egoist.dev/) 与 [Onevra](https://github.com
 
 ## 功能
 
-支持添加、删除和刷新 RSS/Atom 订阅，搜索文章标题及摘要，筛选未读与收藏文章，以及 OPML 导入导出。正文支持 Markdown、图片、表格、引用和代码高亮。RSS 的 HTML 转换为 Markdown 显示，不复现复杂网页布局或交互。
+启动时先显示本地缓存文章，再在后台刷新全部订阅。刷新失败保留缓存并显示错误。订阅最多 4 个并发刷新，支持 ETag 与 Last-Modified 条件请求；服务器返回 304 时复用文章缓存。支持添加、删除和刷新 RSS/Atom 订阅，搜索文章标题及摘要，筛选未读与收藏文章，以及 OPML 导入导出。正文支持 Markdown、图片、表格、引用和代码高亮。RSS 的 HTML 转换为 Markdown 显示，不复现复杂网页布局或交互。
 
 阅读设置提供可搜索的 Mac 已安装字体下拉列表、字号、行距、正文宽度和图片开关。设置与阅读状态保存在本地。订阅提供的正文可以缓存阅读，外部图片需要联网；订阅只提供摘要时不会额外抓取网页全文。
 
 ## AI 阅读
 
 AI 默认关闭。文章工具栏提供按需摘要、全文翻译和原文／译文／双语切换；正文选中后右键可翻译最多 4,000 字。长文按 Markdown 结构分批翻译，逐批显示并保留成功批次以供失败后重试。重新生成可绕过缓存。翻译保留代码、图片和链接目标，不覆盖 RSS 原文。
+
+AI 支持添加多个 OpenAI 兼容供应商，按供应商分别保存地址、名称、模型、密钥与摘要／翻译提示词；已有自定义 API 和 Magpie 配置继续使用。支持模型搜索、提示词编辑与放弃草稿更改。在「阅读」设置中可选择浅色底、侧线或纯文本译文样式，并实时预览。
 
 在左下角「设置」或 ⌘, 打开统一设置页，阅读类别提供字体、字号、行距、宽度和图片开关；AI 类别独立保存 AI 配置。自定义服务使用 OpenAI 兼容 `/models` 与 `/chat/completions` 接口，填写基础地址、实际模型 ID、语言和超时。Magpie 默认 `http://127.0.0.1:3425/v1`，通过 `/api/hello` 验证身份，再读取 `/v1/models`。协议检测不生成内容；测试模型会发出真实请求。密钥保存／删除是独立操作，空输入不会覆盖已有密钥。详见 [AI 阅读说明](AI_READING.md)。
 
@@ -32,12 +34,12 @@ AI 默认关闭。文章工具栏提供按需摘要、全文翻译和原文／�
 go mod tidy
 go test ./...
 go vet ./...
-go run github.com/egoist/mygo/cmd/mygo@v0.4.5 build -platform darwin/arm64
+go run github.com/egoist/mygo/cmd/mygo@v0.5.1 build -platform darwin/arm64
 ```
 
-产物位于 `build/darwin-arm64/`。也可以执行 `bash build-mac-arm.command`。无需 Node 或网页构建步骤。MyGo 固定为 v0.4.5，Onevra 固定为 v0.2026.6。
+产物位于 `build/darwin-arm64/`。也可以执行 `bash build-mac-arm.command`。无需 Node 或网页构建步骤。MyGo 固定为 v0.5.1，Onevra 固定为 v0.2026.6。
 
-固定版本的 `go run ...@v0.4.5` 单独构建上游 CLI；CLI 在项目目录执行的子 `go build` 仍使用本项目的 `replace`。必须保留完整的 `internal/mygo/` 及许可，其中 `ui.Menu.SelectedText()` 为划词翻译读取真实选区。
+应用与构建 CLI 均使用上游 MyGo v0.5.1。划词翻译通过公开接口 `Element.SelectedTexts()` 读取实际选区，无需本地 MyGo 副本或 `replace`。字体列表通过 `ui.FontFamilies()` 读取。
 
 ## 设置与数据
 
@@ -49,9 +51,9 @@ go run github.com/egoist/mygo/cmd/mygo@v0.4.5 build -platform darwin/arm64
 
 ## 验证与限制
 
-1.0.2 的测试与发布检查见 [发布说明](release-v1.0.2.md)。构建环境为 Linux；实际 Mac 窗口启动、CoreText 字体枚举、原生对话框、真实 Keychain、实际 AI 服务和 DMG 挂载未验证。无窗口性能测试不代表 Mac 显示帧率。
+1.1.1 的测试与打包记录见 [发布说明](release-v1.1.1.md)，框架测量与后续建议见 [检查报告](MYGO_0.5_REVIEW.md)。已在 Mac 上验证窗口启动与 CoreText 字体列表。原生文件对话框、真实 Keychain 与实际 AI 服务尚未在本次测试中操作。无窗口性能测试不代表 Mac 显示帧率。
 
-AI 当前使用 `stream: false` 的完整 JSON 响应，逐批更新不等于 token 流式输出。延迟仍受模型、网络和正文长度影响。双语视图按结构块配对，跨独立块选区受限；无法对齐时提示并可切换译文。超长正文仍有整体排版成本。AI 结果可能有误；摘要仅依据订阅提供的内容。
+AI 默认通过 SSE 流式接收文本。摘要和划词翻译逐步显示；全文翻译显示临时译文预览，仅将校验通过的完整批次写入缓存。可停止生成并重试。不支持流式的服务可关闭流式显示；服务明确拒绝 stream 参数时会回退一次。延迟仍受模型、网络和正文长度影响。双语视图按结构块配对，跨独立块选区受限；无法对齐时提示并可切换译文。超长正文仍有整体排版成本。AI 结果可能有误；摘要仅依据订阅提供的内容。
 
 ## 依赖与归属
 

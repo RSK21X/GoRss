@@ -2,7 +2,7 @@
 
 Dependency licenses apply to their respective code and assets. Application source and artwork are not relicensed by this document. The application icon is supplied by the project owner.
 
-The local MyGo v0.4.5 runtime includes the selection accessor modification; its upstream license is retained.
+GoRss uses upstream MyGo v0.5.1 without local runtime modifications; its upstream license is reproduced below.
 
 ## github.com/PuerkitoBio/goquery@v1.8.0/LICENSE
 
@@ -483,7 +483,7 @@ SOFTWARE.
 
 ```
 
-## github.com/egoist/mygo@v0.4.5/LICENSE
+## github.com/egoist/mygo@v0.5.1/LICENSE
 
 ```text
 MIT License
@@ -1306,7 +1306,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ```
 
-## golang.org/x/net@v0.4.0/LICENSE
+## golang.org/x/net@v0.59.0/LICENSE
 
 ```text
 Copyright (c) 2009 The Go Authors. All rights reserved.
@@ -1499,7 +1499,7 @@ SOFTWARE.
 
 ## MingCute embedded search icon
 
-`internal/mygo/ui/combobox.go` attributes the search icon to MingCute under Apache-2.0 (https://github.com/Richard9394/MingCute).
+MyGo `ui/combobox.go` attributes the search icon to MingCute under Apache-2.0 (https://github.com/Richard9394/MingCute).
 
 ```text
 

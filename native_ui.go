@@ -34,6 +34,7 @@ type nativeReader struct {
 	settingsState                             components.SettingsState
 	settings, addOpen, removeOpen, moreOpen   bool
 	refreshing                                bool
+	integratedTitlebar                        bool
 	filter, feedID, articleID, query, address string
 	pending                                   int
 	errorText, notice                         string
@@ -211,7 +212,7 @@ func (a *nativeReader) view(c *ui.Context) {
 			a.settings, a.addOpen, a.removeOpen, a.moreOpen = false, false, false, false
 		}
 	}
-	ui.Column(c).Fill().MinWidth(0).Children(func() {
+	ui.Column(c).Fill().MinWidth(0).Font("").FontSize(nativeUIBodySize).Children(func() {
 		if a.settings {
 			a.settingsView(c)
 		} else {
@@ -227,17 +228,17 @@ func (a *nativeReader) view(c *ui.Context) {
 }
 
 func nativeIconButton(c *ui.Context, label string, icon *ui.SVG, action func()) ui.Element {
-	b := components.Button(c, "", components.ButtonGhost).Label(label).Size(32, 32).Shrink(0).Padding(6).Children(func() { components.Icon(c, icon).Size(18, 18).TextColor(c.Theme().Text) })
+	b := components.Button(c, "", components.ButtonGhost).Label(label).Size(32, 32).Shrink(0).Padding(6).Children(func() { components.Icon(c, icon).Size(18, 18) })
 	components.Tooltip(c, b, label)
 	b.OnClick(action)
-	return b
+	return nativeControlMotion(b)
 }
 
 func (a *nativeReader) feedback(c *ui.Context) {
 	if a.errorText == "" && a.notice == "" && a.pending == 0 {
 		return
 	}
-	ui.Row(c).FillWidth().MinWidth(0).Padding(8, 16).Gap(8).AlignItems(ui.Center).BorderWidth(1, 0, 0, 0).BorderColor(c.Theme().Border).Children(func() {
+	ui.Row(c).FillWidth().MinWidth(0).Font("").FontSize(nativeUIBodySize).Padding(8, 16).Gap(8).AlignItems(ui.Center).BorderWidth(1, 0, 0, 0).BorderColor(c.Theme().Border).Children(func() {
 		if a.pending > 0 {
 			components.Spinner(c, components.SpinnerSpokes).Size(16, 16).Label("正在处理")
 			label := "正在处理…"
@@ -260,7 +261,10 @@ func (a *nativeReader) feedback(c *ui.Context) {
 
 func (a *nativeReader) sidebar(c *ui.Context) {
 	a.ensurePresentation()
-	ui.Column(c).Fill().Background(c.Theme().Surface).Children(func() {
+	ui.Column(c).Fill().Background(nativeSidebarSurface).Font("").FontSize(nativeUIBodySize).Label("订阅导航栏").Children(func() {
+		if height := a.windowHeaderHeight(c); height > 0 {
+			ui.Box(c).FillWidth().Height(height).Shrink(0).DragWindow().Label("窗口拖动区")
+		}
 		components.ScrollView(c, components.ScrollViewOptions{}).Grow(1).MinHeight(0).Children(func() {
 			components.Sidebar(c).Children(func() {
 				components.SidebarSection(c, "阅读", func() {
@@ -270,7 +274,12 @@ func (a *nativeReader) sidebar(c *ui.Context) {
 					}{{"all", "全部文章", lucide.Inbox()}, {"unread", "未读", lucide.Mail()}, {"starred", "收藏", lucide.Star()}} {
 						count := a.presentation.counts[item.id]
 						id := item.id
-						components.SidebarItem(c, fmt.Sprintf("%s  %d", item.label, count), item.icon, a.filter == id && a.feedID == "").OnClick(func() { a.filter, a.feedID = id, "" })
+						selected := a.filter == id && a.feedID == ""
+						button := components.SidebarItem(c, fmt.Sprintf("%s  %d", item.label, count), item.icon, selected).FontWeight(500)
+						if selected {
+							button.Background(nativeSelectedSurface)
+						}
+						button.Transition(ui.ElementTransition{Duration: nativeControlDuration, Colors: true}).OnClick(func() { a.filter, a.feedID = id, "" })
 					}
 				})
 				ui.Column(c).FillWidth().MinWidth(0).Gap(c.Theme().Space(1)).Children(func() {
@@ -296,14 +305,14 @@ func (a *nativeReader) sidebar(c *ui.Context) {
 						ui.Column(c).Key(f.ID).Children(func() {
 							b := components.Button(c, "", components.ButtonGhost).Key(f.ID).Label(fmt.Sprintf("%s，%d 篇未读", f.Title, count)).FillWidth().MinWidth(0).Justify(ui.Start).Padding(c.Theme().Space(1.75), c.Theme().Space(2)).Gap(c.Theme().Space(2)).Selected(a.feedID == f.ID)
 							if a.feedID == f.ID {
-								b.Background(c.Theme().Text.Alpha(.1))
+								b.Background(nativeSelectedSurface)
 							}
 							b.Children(func() {
 								components.Text(c, f.Title).SingleLine().Ellipsis("…").Grow(1).MinWidth(0)
-								components.Text(c, fmt.Sprint(count)).FontSize(11).TextColor(c.Theme().TextMuted).Shrink(0)
+								components.Text(c, fmt.Sprint(count)).FontSize(nativeCaptionSize).TextColor(c.Theme().TextMuted).Shrink(0)
 							})
 							components.Tooltip(c, b, f.Title)
-							b.OnClick(func() { a.feedID, a.filter = f.ID, "all" })
+							b.Transition(ui.ElementTransition{Duration: nativeControlDuration, Colors: true}).OnClick(func() { a.feedID, a.filter = f.ID, "all" })
 							if f.Error != "" {
 								failure := components.Text(c, "刷新失败").FontSize(11).TextColor(c.Theme().Danger).Padding(0, 8).Label(f.Error)
 								components.Tooltip(c, failure, f.Error)
@@ -339,10 +348,18 @@ func (a *nativeReader) articleList(c *ui.Context) {
 	if a.feedID != "" {
 		title = a.feedTitle(a.feedID)
 	}
-	ui.Column(c).Fill().MinWidth(0).Children(func() {
-		ui.Column(c).FillWidth().Padding(16).Gap(12).BorderWidth(0, 0, 1, 0).BorderColor(c.Theme().Border).Children(func() {
-			ui.Row(c).FillWidth().MinWidth(0).AlignItems(ui.Center).Gap(8).Children(func() {
-				components.Text(c, title).FontSize(18).Bold().SingleLine().Ellipsis("…").Grow(1).MinWidth(0)
+	ui.Column(c).Fill().MinWidth(0).Background(nativeListSurface).Font("").FontSize(nativeUIBodySize).Label("文章列表栏").Children(func() {
+		top := float32(16)
+		if a.windowHeaderHeight(c) > 0 {
+			top = 8
+		}
+		ui.Column(c).FillWidth().Padding(top, 16, 16).Gap(12).BorderWidth(0, 0, 1, 0).BorderColor(c.Theme().Border).Children(func() {
+			header := ui.Row(c).FillWidth().MinWidth(0).AlignItems(ui.Center).Gap(8)
+			if a.integratedTitlebar {
+				header.DragWindow().Label("列表窗口拖动区")
+			}
+			header.Children(func() {
+				components.Text(c, title).FontSize(nativeSectionSize).FontWeight(600).SingleLine().Ellipsis("…").Grow(1).MinWidth(0)
 				nativeIconButton(c, a.markAllReadLabel(), lucide.CheckCheck(), func() {
 					id := a.feedID
 					a.run(func(context.Context) error { _, err := a.reader.MarkAllRead(id); return err }, func(err error) {
@@ -366,7 +383,11 @@ func (a *nativeReader) articleList(c *ui.Context) {
 		} else {
 			components.List(c, &a.listState, len(a.rows), func(i int) {
 				article := a.rows[i]
-				ui.Column(c).FillWidth().MinWidth(0).Padding(16).Gap(8).BorderWidth(0, 0, 1, 0).BorderColor(c.Theme().Border.Alpha(.55)).Children(func() {
+				row := ui.Column(c).FillWidth().MinWidth(0).Padding(15, 16).Gap(7).BorderWidth(0, 0, 1, 0).BorderColor(c.Theme().Border.Alpha(.35))
+				if article.ID == a.articleID {
+					row.Background(nativeSelectedSurface).BorderColor(ui.Transparent)
+				}
+				row.Children(func() {
 					ui.Row(c).FillWidth().MinWidth(0).Gap(6).AlignItems(ui.Center).Children(func() {
 						if !article.Read {
 							ui.Box(c).Size(6, 6).Radius(3).Background(c.Theme().Accent).Shrink(0).Label("未读文章")
@@ -375,19 +396,19 @@ func (a *nativeReader) articleList(c *ui.Context) {
 						if !article.Read {
 							weight = 600
 						}
-						components.Text(c, article.Title).Wrap().MaxLines(3).Ellipsis("…").Grow(1).MinWidth(0).FontSize(16).FontWeight(weight).LineHeight(1.4)
+						components.Text(c, article.Title).Wrap().MaxLines(3).Ellipsis("…").Grow(1).MinWidth(0).FontSize(nativeListTitleSize).FontWeight(weight).LineHeight(1.45)
 						if article.Starred {
-							components.Icon(c, lucide.Star()).Size(12, 12).TextColor(c.Theme().Accent).Shrink(0).Label("已收藏")
+							components.Icon(c, nativeFilledStar).Size(12, 12).TextColor(c.Theme().Accent).Shrink(0).Label("已收藏")
 						}
 					})
 					if preview := a.articlePreview(article.ID); preview != "" {
-						components.Text(c, preview).Wrap().MaxLines(3).Ellipsis("…").FontSize(12).TextColor(c.Theme().TextMuted).LineHeight(1.5)
+						components.Text(c, preview).Wrap().MaxLines(3).Ellipsis("…").FontSize(nativeUIBodySize).TextColor(c.Theme().TextMuted).LineHeight(1.55)
 					}
 					ui.Row(c).FillWidth().MinWidth(0).Gap(8).Children(func() {
 						if a.feedID == "" {
-							components.Text(c, a.feedTitle(article.FeedID)).FontSize(11).TextColor(c.Theme().TextMuted).SingleLine().Ellipsis("…").Grow(1).MinWidth(0)
+							components.Text(c, a.feedTitle(article.FeedID)).FontSize(nativeCaptionSize).TextColor(c.Theme().TextMuted).SingleLine().Ellipsis("…").Grow(1).MinWidth(0)
 						}
-						components.Text(c, articleDate(article.Published)).SingleLine().FontSize(11).TextColor(c.Theme().TextMuted).Shrink(0)
+						components.Text(c, articleDate(article.Published)).SingleLine().FontSize(nativeCaptionSize).TextColor(c.Theme().TextMuted).Shrink(0)
 					})
 				})
 			}).Grow(1).MinHeight(0).FillWidth()
@@ -429,24 +450,36 @@ func (a *nativeReader) feedTitle(id string) string {
 func (a *nativeReader) articleView(c *ui.Context) {
 	article := a.article()
 	if article == nil {
-		ui.Column(c).Fill().Center().Padding(48).Gap(12).Children(func() {
-			components.Text(c, "留一点时间给阅读").FontSize(24).FontWeight(500)
-			components.Text(c, "从左侧选择一篇文章。").TextColor(c.Theme().TextMuted)
+		ui.Column(c).Fill().Background(nativePaperSurface).Children(func() {
+			if height := a.windowHeaderHeight(c); height > 0 {
+				ui.Box(c).FillWidth().Height(height).Shrink(0).DragWindow().Label("阅读窗口拖动区")
+			}
+			ui.Column(c).Fill().Center().Padding(48).Gap(12).Children(func() {
+				components.Text(c, "留一点时间给阅读").FontSize(24).FontWeight(500)
+				components.Text(c, "从左侧选择一篇文章。").TextColor(c.Theme().TextMuted)
+			})
 		})
 		return
 	}
 	v := *article
-	ui.Column(c).Fill().MinWidth(0).Background(c.Theme().Surface).Children(func() {
-		ui.Row(c).FillWidth().MinWidth(0).Padding(8, 16).Gap(8).AlignItems(ui.Center).BorderWidth(0, 0, 1, 0).BorderColor(c.Theme().Border).Children(func() {
+	ui.Column(c).Fill().MinWidth(0).Background(nativePaperSurface).Label("文章阅读栏").Children(func() {
+		toolbar := ui.Row(c).FillWidth().MinWidth(0).Font("").FontSize(nativeUIBodySize).Padding(8, 16).Gap(8).AlignItems(ui.Center).BorderWidth(0, 0, 1, 0).BorderColor(c.Theme().Border)
+		if a.integratedTitlebar {
+			toolbar.MinHeight(a.windowHeaderHeight(c)).DragWindow().Label("阅读窗口拖动区")
+		}
+		toolbar.Children(func() {
 			components.Text(c, a.feedTitle(v.FeedID)).SingleLine().Ellipsis("…").FontSize(12).TextColor(c.Theme().TextMuted).Grow(1).MinWidth(0)
 			a.aiToolbar(c, v)
 			starLabel, starIcon := "收藏", lucide.Star()
 			if v.Starred {
-				starLabel, starIcon = "取消收藏", lucide.StarOff()
+				starLabel, starIcon = "取消收藏", nativeFilledStar
 			}
-			nativeIconButton(c, starLabel, starIcon, func() {
+			starButton := nativeIconButton(c, starLabel, starIcon, func() {
 				a.run(func(context.Context) error { _, err := a.reader.SetStarred(v.ID, !v.Starred); return err }, nil)
 			}).Disabled(a.pending > 0)
+			if v.Starred {
+				starButton.TextColor(c.Theme().Accent).Background(c.Theme().Accent.Alpha(.09))
+			}
 			readLabel, readIcon := "标记当前文章为已读", lucide.CheckCheck()
 			if v.Read {
 				readLabel, readIcon = "标记当前文章为未读", lucide.CircleDot()
@@ -470,7 +503,7 @@ func (a *nativeReader) articleView(c *ui.Context) {
 					if v.Author != "" {
 						meta = v.Author + "  /  " + meta
 					}
-					components.Text(c, meta).FontSize(12).TextColor(c.Theme().TextMuted)
+					components.Text(c, meta).Font("").FontSize(12).TextColor(c.Theme().TextMuted)
 					if a.articleLoading {
 						components.Spinner(c, components.SpinnerSpokes).Size(20, 20).Label("正在加载文章")
 					}

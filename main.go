@@ -6,8 +6,6 @@ import (
 	"path/filepath"
 
 	"github.com/egoist/mygo"
-	"github.com/oneo-me/onevra/source/shells/plain"
-	"github.com/oneo-me/onevra/source/theme"
 	"gorss/backend"
 )
 
@@ -24,11 +22,7 @@ func main() {
 	mygo.App.SetName("GoRss")
 	mygo.App.WhenReady(func() {
 		mygo.Theme.SetSource(mygo.ThemeLight)
-		shell := plain.NewShell(plain.ShellOptions{
-			Title: "GoRss", Width: 1380, Height: 860, MinWidth: 980, MinHeight: 620,
-			Appearance: theme.Light, Content: app.view,
-		})
-		app.window = shell.Window()
+		app.window = newNativeReaderWindow(app)
 		app.window.OnClosed(func() { app.close(); mygo.App.Quit() })
 		app.start()
 	})

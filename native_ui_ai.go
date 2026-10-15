@@ -26,6 +26,8 @@ type nativeAIResult struct {
 	text, errorText  string
 	document         *markdown.MarkdownDocument
 	loading, open    bool
+	finished         bool
+	copy             nativeCopyFeedback
 	cancel           context.CancelFunc
 	generation       uint64
 	translation      *aiservice.TranslationResult
@@ -49,6 +51,8 @@ func (r *nativeAIResult) clear() {
 	r.completed, r.total = 0, 0
 	r.verifiedText = ""
 	r.open = false
+	r.finished = false
+	r.copy = nativeCopyFeedback{}
 }
 
 type nativeAIState struct {
@@ -117,7 +121,15 @@ func (a *nativeReader) syncAIArticle(article backend.Article) {
 	}
 }
 func (a *nativeReader) closeSelectionAI() { a.ai.selection.clear(); a.ai.selectionText = "" }
-func (a *nativeReader) closeSummaryAI()   { a.ai.summary.stop(); a.ai.summary.open = false }
+func (a *nativeReader) openSummaryAI() {
+	r := &a.ai.summary
+	if r.finished && r.errorText == "" && r.text != "" {
+		r.open = true
+		return
+	}
+	a.requestAI("summary", false)
+}
+func (a *nativeReader) closeSummaryAI() { a.ai.summary.stop(); a.ai.summary.open = false }
 
 func (a *nativeReader) requestAI(kind string, regenerate bool) {
 	if !a.aiReady() {
@@ -151,6 +163,8 @@ func (a *nativeReader) requestAI(kind string, regenerate bool) {
 	retrying := result.errorText != ""
 	result.stop()
 	result.open, result.loading, result.errorText = true, true, ""
+	result.finished = false
+	result.copy = nativeCopyFeedback{}
 	ctx, cancel := context.WithCancel(a.ctx)
 	result.cancel = cancel
 	token, sourceKey := result.generation, a.ai.sourceKey
@@ -226,6 +240,7 @@ func (a *nativeReader) requestAI(kind string, regenerate bool) {
 				return
 			}
 			result.text, result.document = output, document
+			result.finished = true
 			if a.ai.cache == nil {
 				a.ai.cache = make(map[string]nativeAICacheEntry)
 			}
@@ -255,7 +270,7 @@ func (a *nativeReader) aiToolbar(c *ui.Context, article backend.Article) {
 		if a.ai.summary.open {
 			a.closeSummaryAI()
 		} else {
-			a.requestAI("summary", false)
+			a.openSummaryAI()
 		}
 	}).Disabled(!available)
 	nativeIconButton(c, "翻译文章", lucide.Languages(), func() {
@@ -276,29 +291,38 @@ func (a *nativeReader) aiSummaryView(c *ui.Context, article backend.Article) {
 		return
 	}
 	r := &a.ai.summary
-	ui.Column(c).FillWidth().MinWidth(0).Padding(14).Gap(10).Radius(10).Border(1, c.Theme().Border).Background(c.Theme().Background).Children(func() {
-		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
-			components.Icon(c, lucide.Sparkles()).Size(16, 16)
-			label := "AI 摘要"
-			if !r.open {
-				label += " · 点击展开"
+	ui.Column(c).Key("summary-disclosure").FillWidth().MinWidth(0).Padding(10, 12).Gap(2).Radius(10).Background(nativeSummarySurface).Children(func() {
+		var disclosure ui.CollapsibleParts
+		ui.Row(c).FillWidth().MinWidth(0).Font("").FontSize(nativeUIBodySize).Gap(4).AlignItems(ui.Center).Children(func() {
+			disclosure = ui.CollapsibleBase(c, &r.open)
+			trigger := disclosure.Trigger.Grow(1).MinWidth(0).AlignItems(ui.Center).Gap(8).Padding(7, 4).Radius(6)
+			label := "展开 AI 摘要"
+			if r.open {
+				label = "收起 AI 摘要"
 			}
-			components.Button(c, label, components.ButtonGhost).Grow(1).MinWidth(0).OnClick(func() {
+			trigger.Label(label)
+			if trigger.Changed() {
 				if r.open {
-					a.closeSummaryAI()
+					a.openSummaryAI()
 				} else {
-					a.requestAI("summary", false)
+					a.closeSummaryAI()
 				}
+			}
+			trigger.Children(func() {
+				components.Icon(c, lucide.Sparkles()).Size(16, 16).TextColor(c.Theme().Accent)
+				components.Text(c, "AI 摘要").FontWeight(600).Grow(1).SingleLine()
+				components.Icon(c, lucide.ChevronRight()).Size(14, 14).TextColor(c.Theme().TextMuted).Rotate(90 * disclosure.Progress())
 			})
 			if r.open {
-				nativeIconButton(c, "重新生成摘要", lucide.RotateCw(), func() { a.requestAI("summary", true) }).Disabled(r.loading)
-				nativeIconButton(c, "关闭摘要", lucide.X(), a.closeSummaryAI)
+				nativeCopyButton(c, "复制摘要", r.text, r.loading || r.text == "", true, &r.copy)
+				nativeIconButton(c, "重新生成摘要", lucide.RotateCw(), func() { a.requestAI("summary", true) }).Size(30, 30).Disabled(r.loading)
+				nativeIconButton(c, "关闭摘要", lucide.X(), a.closeSummaryAI).Size(30, 30)
 			}
 		})
-		if r.open {
-			components.Text(c, "基于订阅提供的可用内容生成，可能不是完整原文。").Wrap().TextColor(c.Theme().Text).FontSize(13)
+		disclosure.Panel(func() {
+			components.Text(c, "基于订阅提供的可用内容生成，可能不是完整原文。").Font("").Wrap().TextColor(c.Theme().TextMuted).FontSize(12).LineHeight(1.5)
 			a.aiResultView(c, r, article.URL, func() { a.requestAI("summary", true) })
-		}
+		}).FillWidth().MinWidth(0).Padding(4, 4, 8).Gap(10)
 	})
 }
 func (a *nativeReader) aiResultView(c *ui.Context, r *nativeAIResult, base string, retry func()) {
@@ -310,6 +334,7 @@ func (a *nativeReader) aiResultView(c *ui.Context, r *nativeAIResult, base strin
 func (a *nativeReader) stopAIResult(r *nativeAIResult) {
 	r.stop()
 	r.errorText = "已停止生成，可重试。"
+	r.copy = nativeCopyFeedback{}
 	if r == &a.ai.translation {
 		r.text = r.verifiedText
 		if r.text == "" || r.text == a.ai.source {
@@ -342,21 +367,21 @@ func (a *nativeReader) aiTranslationView(c *ui.Context, article backend.Article)
 		a.ai.mode = "original"
 	}
 	if r.open || a.ai.mode != "original" {
-		ui.Row(c).FillWidth().Gap(4).AlignItems(ui.Center).Children(func() {
-			for _, item := range []struct{ id, label string }{{"original", "原文"}, {"translated", "译文"}, {"bilingual", "双语对照"}} {
-				item := item
-				style := components.ButtonGhost
-				if a.ai.mode == item.id {
-					style = components.ButtonSecondary
+		ui.Row(c).FillWidth().MinWidth(0).Font("").FontSize(nativeUIBodySize).Gap(8).AlignItems(ui.Center).Children(func() {
+			modes := []string{"original", "translated", "bilingual"}
+			selected := 0
+			for i, mode := range modes {
+				if a.ai.mode == mode {
+					selected = i
 				}
-				components.Button(c, item.label, style).OnClick(func() {
-					a.ai.mode = item.id
-					if item.id != "original" {
-						a.requestAI("translation", false)
-					}
-				})
 			}
-			ui.Spacer(c).Grow(1)
+			tabs := nativeSegmented(c, &selected, "译文显示模式", "原文", "译文", "双语对照")
+			if tabs.List.Changed() {
+				a.ai.mode = modes[selected]
+				if a.ai.mode != "original" {
+					a.requestAI("translation", false)
+				}
+			}
 			nativeIconButton(c, "重新翻译", lucide.RotateCw(), func() { a.requestAI("translation", true) }).Disabled(r.loading)
 			nativeIconButton(c, "关闭翻译", lucide.X(), func() { r.clear(); a.ai.mode = "original" })
 		})
@@ -550,7 +575,7 @@ func (a *nativeReader) aiSelectionView(c *ui.Context) {
 		components.Text(c, shortText(a.ai.selectionText, 160)).Wrap().TextColor(c.Theme().TextMuted)
 		components.ScrollView(c, components.ScrollViewOptions{}).MaxHeight(380).FillWidth().Children(func() { a.aiResultView(c, r, "", func() { a.requestAI("selection", true) }) })
 		ui.Row(c).Gap(8).Justify(ui.End).Children(func() {
-			components.Button(c, "复制译文", components.ButtonSecondary).Disabled(r.loading || r.text == "").OnClick(func() { c.WriteClipboard(r.text) })
+			nativeCopyButton(c, "复制译文", r.text, r.loading || r.text == "", false, &r.copy)
 			components.Button(c, "重试", components.ButtonGhost).Disabled(r.loading).OnClick(func() { a.requestAI("selection", true) })
 			components.Button(c, "关闭", components.ButtonGhost).OnClick(a.closeSelectionAI)
 		})

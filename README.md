@@ -3,21 +3,38 @@
 [简体中文](README.zh-CN.md)
 
 GoRss is a native RSS and Atom reader for Apple Silicon Macs, built with [MyGo](https://mygo.egoist.dev/) and [Onevra](https://github.com/oneo-me/onevra). It combines subscription navigation, an article list, and a quiet reading pane in a light interface.
-<img width="2760" height="1716" alt="GoRss reader" src="https://github.com/user-attachments/assets/10400f67-b985-4bd7-b995-bc3f1caec4c6" />
+
+![GoRss 1.2.1 reader and AI summary](docs/screenshots/reader.png)
 
 ## Features
 
 Cached articles appear at launch while all subscriptions refresh in the background. A failed refresh keeps cached articles and reports the error. Up to four subscriptions refresh concurrently. ETag and Last-Modified conditional requests reuse cached articles on HTTP 304. Add, remove, and refresh RSS/Atom subscriptions; search article titles and summaries; filter unread and starred articles; and import or export subscriptions as OPML. Articles support Markdown, images, tables, quotes, and highlighted code blocks. Feed HTML is converted to Markdown; complex web layouts and interactive content are not reproduced.
 
-Reading settings include a searchable dropdown of locally installed macOS fonts, font size, line spacing, content width, and image visibility. Settings and reading state persist locally. Articles provided by feeds are cached; remote images require a connection. The reader does not fetch full web pages when a feed provides only a summary.
+Reading settings include a searchable dropdown of locally installed macOS fonts, font size, line spacing, content width, and image visibility. Interface typography stays separate from reading preferences. Three warm surfaces distinguish subscriptions, article lists and reading content. An integrated macOS titlebar brings the article list and reading controls to the top while preserving native window buttons. Settings adapt to narrow windows and full screen. Settings and reading state persist locally. Articles provided by feeds are cached; remote images require a connection. The reader does not fetch full web pages when a feed provides only a summary.
 
 ## AI reading
 
 AI is disabled by default. Article toolbar actions generate summaries and translate articles on demand, with original, translated, and bilingual views. Select text and use the context menu to translate up to 4,000 characters. Long articles are translated in Markdown-aware batches, displayed as each batch completes. Retry reuses successful batches; regeneration bypasses cached results. Code, images, and link destinations are preserved, and RSS content is never overwritten.
 
-Add multiple OpenAI-compatible providers, each with its own name, endpoint, model, credential account, and summary/translation prompts. Settings include model search, prompt editors, a fixed save bar, and draft discard. Reading settings offer a soft background, a side rule, or plain text for bilingual translations, with a live preview. Existing custom API and Magpie profiles remain available.
+Add multiple OpenAI-compatible providers, each with its own name, endpoint, model, credential account, and summary/translation prompts. Settings include model search, prompt editors, a fixed save bar, and draft discard. Summaries expand and collapse smoothly, and translation modes use a sliding segmented control. Star and copy actions provide visual feedback; motion follows the system Reduce Motion preference. Reading settings offer a soft background, a side rule, or plain text for bilingual translations, with a live preview. Existing custom API and Magpie profiles remain available.
 
 Open Settings from the sidebar or ⌘,. Reading settings control typography, images, and bilingual translation styles; the AI category saves its configuration separately. Custom providers use OpenAI-compatible `/models` and `/chat/completions` endpoints: enter a base URL, actual model ID, target language, and timeout. Magpie defaults to `http://127.0.0.1:3425/v1`; detection checks `/api/hello` identity before `/v1/models`. Model testing sends a real request. Save/delete credentials explicitly; an empty field keeps the existing key. See [AI reading details](AI_READING.md).
+
+## Screenshots
+
+<details>
+<summary>Bilingual reading</summary>
+
+![Original and translated paragraphs with the translation mode control](docs/screenshots/bilingual.png)
+
+</details>
+
+<details>
+<summary>Reading settings and bilingual style preview</summary>
+
+![Reading settings with a live bilingual style preview](docs/screenshots/settings.png)
+
+</details>
 
 ## Install
 
@@ -50,7 +67,7 @@ Data is stored under `~/Library/Application Support/GoRss/`: `reader.json` conta
 
 ## Validation and limits
 
-See the [1.1.1 release notes](release-v1.1.1.md) for validation and packaging, and the [MyGo review](MYGO_0.5_REVIEW.md) for framework measurements and follow-up work. Native macOS window startup and CoreText font enumeration were checked. Native file dialogs, the real Keychain, and live AI services were not exercised in this round. Headless performance tests do not measure macOS display FPS.
+See the [1.2.1 release notes](release-v1.2.1.md) for feature changes, and the [MyGo review](MYGO_0.5_REVIEW.md) for framework measurements and follow-up work. Native macOS window startup and CoreText font enumeration were checked. Native file dialogs, the real Keychain, and live AI services were not exercised in this round. Headless performance tests do not measure macOS display FPS.
 
 AI displays SSE output progressively. Summaries and selection translations show arriving text. Article translations show provisional previews and cache only fully validated batches. Generation can be stopped and retried. Disable streaming for incompatible services; an explicit rejection of the stream parameter permits one fallback. Latency depends on the model, network, and article length. Bilingual selection is limited across independent paired blocks; alignment failures are explained with a translated-view fallback. Very long articles still incur whole-document layout costs. AI results can be inaccurate, and summaries only use content available from the feed.
 

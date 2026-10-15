@@ -63,8 +63,12 @@ func (a *nativeReader) settingsView(c *ui.Context) {
 			},
 		}},
 	}, a.aiSettingsCategory()}
-	ui.Column(c).Fill().Background(c.Theme().Background).Children(func() {
+	ui.Column(c).Fill().MinHeight(0).MinWidth(0).Background(c.Theme().Background).Children(func() {
 		ui.Column(c).Grow(1).MinHeight(0).FillWidth().Children(func() {
+			if a.integratedTitlebar {
+				a.settingsSurface(c, categories)
+				return
+			}
 			components.Settings(c, &a.settingsState, categories, components.SettingsOptions{Title: "设置", SearchLabel: "搜索设置", SearchPlaceholder: "搜索设置", CategoryLabel: "类别", ResultsTitle: "搜索结果", EmptyText: "没有匹配的设置", Narrow: nativeSettingsNarrow(c), HeaderActions: func(c *ui.Context) {
 				components.Button(c, "返回阅读", components.ButtonGhost).OnClick(func() { a.settings = false })
 			}})

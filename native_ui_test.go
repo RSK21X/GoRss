@@ -723,6 +723,8 @@ func TestNativeAISummaryNoteAndProgressBilingual(t *testing.T) {
 	if !tt.HasText("基于订阅提供的可用内容生成，可能不是完整原文。") {
 		t.Fatal("expanded summary omitted source note")
 	}
+	// With reduced motion, disclosure content disappears immediately.
+	tt.SetPreferences(ui.Preferences{ReduceMotion: true, TextScale: 1})
 	a.ai.summary.open = false
 	tt.Frame()
 	if tt.HasText("基于订阅提供的可用内容生成，可能不是完整原文。") {
